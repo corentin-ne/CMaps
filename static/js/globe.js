@@ -47,7 +47,7 @@ const CMapsGlobe = (() => {
                         id: 'background',
                         type: 'background',
                         paint: {
-                            'background-color': '#f1f3f5'
+                            'background-color': 'rgba(0,0,0,0)'
                         }
                     }
                 ],
