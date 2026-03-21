@@ -23,9 +23,9 @@ def get_capitals(
     """
     query = db.query(Capital)
 
-    if zoom < 3:
+    if zoom < 2:
         query = query.filter(Capital.is_country_capital == True)
-    elif zoom < 6:
+    elif zoom < 5:
         query = query.filter(
             (Capital.is_country_capital == True) |
             (Capital.population >= 500000)

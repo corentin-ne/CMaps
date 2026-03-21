@@ -53,14 +53,12 @@ def get_cities(zoom: float = Query(0, description="Current zoom level")):
 
         include = False
         if zoom < 2:
-            include = is_capital
-        elif zoom < 4:
             include = is_capital or pop >= 1000000
-        elif zoom < 6:
+        elif zoom < 4:
             include = is_capital or pop >= 500000
-        elif zoom < 8:
+        elif zoom < 6:
             include = is_capital or pop >= 100000
-        elif zoom < 10:
+        elif zoom < 8:
             include = is_capital or pop >= 50000
         else:
             include = True

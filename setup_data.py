@@ -25,14 +25,14 @@ DATASETS = {
         "description": "Admin-1 regions/states/provinces (10m)",
     },
     "rivers": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_rivers_lake_centerlines.geojson",
-        "filename": "ne_110m_rivers_lake_centerlines.geojson",
-        "description": "Major rivers",
+        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_rivers_lake_centerlines.geojson",
+        "filename": "ne_10m_rivers_lake_centerlines.geojson",
+        "description": "Major rivers (10m region)",
     },
     "lakes": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_lakes.geojson",
-        "filename": "ne_110m_lakes.geojson",
-        "description": "Major lakes",
+        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_lakes.geojson",
+        "filename": "ne_10m_lakes.geojson",
+        "description": "Major lakes (10m region)",
     },
     "cities": {
         "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson",

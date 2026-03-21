@@ -23,13 +23,13 @@ def _load_geojson(filename: str) -> dict:
 @router.get("/rivers")
 def get_rivers():
     """Get river lines GeoJSON."""
-    return _load_geojson("ne_110m_rivers_lake_centerlines.geojson")
+    return _load_geojson("ne_10m_rivers_lake_centerlines.geojson")
 
 
 @router.get("/lakes")
 def get_lakes():
     """Get lake polygons GeoJSON."""
-    return _load_geojson("ne_110m_lakes.geojson")
+    return _load_geojson("ne_10m_lakes.geojson")
 
 
 @router.get("/mountains")
@@ -42,8 +42,8 @@ def get_mountains():
         for f in data["features"]:
             props = f.get("properties", {})
             elevation = props.get("elevation", 0) or 0
-            # Include peaks above 1000m
-            if elevation >= 1000:
+            # Include peaks above 500m
+            if elevation >= 500:
                 filtered.append(f)
         data["features"] = filtered
     return data

@@ -7,6 +7,8 @@ const CMapsGlobe = (() => {
     let hoveredCountryId = null;
     let selectedCountryId = null;
     let countriesData = null;
+    let regionsData = null;
+    let countryToRegions = {}; // Maps country_id -> array of region_ids
     let popup = null;
 
     // Layer IDs
@@ -57,7 +59,7 @@ const CMapsGlobe = (() => {
             zoom: 1.8,
             minZoom: 0.5,
             maxZoom: 15,
-            mapProjection: 'globe',
+            projection: { type: 'globe' },
             attributionControl: false,
         });
 
@@ -123,7 +125,20 @@ const CMapsGlobe = (() => {
             addRiversLayer(rivers);
             addLakesLayer(lakes);
             addMountainsLayer(mountains);
-            addRegionsLayer(regions);
+
+            // Store regions data and build mapping
+            regionsData = regions;
+            regionsData.features.forEach(f => {
+                const cId = f.properties.country_id;
+                if (cId) {
+                    if (!countryToRegions[cId]) countryToRegions[cId] = [];
+                    // Ensure the feature has a top-level id for feature-state
+                    if (f.id === undefined) f.id = f.properties.id;
+                    countryToRegions[cId].push(f.id);
+                }
+            });
+
+            addRegionsLayer(regionsData);
             addCitiesLayer(cities);
             addCapitalsLayer(capitals);
 
@@ -164,6 +179,7 @@ const CMapsGlobe = (() => {
                     0.55
                 ],
             },
+            maxzoom: 4, // Hide when zoomed in to let regions take over
         });
 
         // Country borders
@@ -184,6 +200,7 @@ const CMapsGlobe = (() => {
                     0.6
                 ],
             },
+            maxzoom: 4, // Hide when zoomed in to let regions take over
         });
     }
 
@@ -345,32 +362,73 @@ const CMapsGlobe = (() => {
      * Add regions (admin-1) layer.
      */
     function addRegionsLayer(geojson) {
-        map.addSource('regions', { type: 'geojson', data: geojson });
+        // Build a color expression mapping country_id to the country's color
+        const colorExpression = buildRegionColorExpression();
 
-        // Region fills (very subtle)
+        map.addSource('regions', { 
+            type: 'geojson', 
+            data: geojson,
+            promoteId: 'id' // Ensure feature-state works
+        });
+
+        // Region fills (act as high-quality country fills when zoomed in)
         map.addLayer({
             id: LAYERS.REGIONS_FILL,
             type: 'fill',
             source: 'regions',
             paint: {
-                'fill-color': ['get', 'color'],
-                'fill-opacity': 0.15,
+                'fill-color': colorExpression,
+                'fill-opacity': [
+                    'case',
+                    ['boolean', ['feature-state', 'selected'], false], 0.85,
+                    ['boolean', ['feature-state', 'hover'], false], 0.7,
+                    0.55
+                ],
             },
-            minzoom: 3,
+            minzoom: 3.5, // Fade in as countries fade out
         });
 
-        // Region borders (dashed)
+        // Region borders (high-quality borders + internal borders)
         map.addLayer({
             id: LAYERS.REGIONS_BORDER,
             type: 'line',
             source: 'regions',
             paint: {
-                'line-color': 'rgba(255, 255, 255, 0.4)',
-                'line-width': 0.8,
-                'line-dasharray': [3, 3],
+                'line-color': [
+                    'case',
+                    ['boolean', ['feature-state', 'selected'], false], '#6ea8fe',
+                    'rgba(255, 255, 255, 0.35)'
+                ],
+                'line-width': [
+                    'case',
+                    ['boolean', ['feature-state', 'selected'], false], 2.5,
+                    ['boolean', ['feature-state', 'hover'], false], 1.5,
+                    0.8
+                ],
             },
-            minzoom: 3,
+            minzoom: 3.5,
         });
+    }
+
+    /**
+     * Build a match expression for regions to inherit country colors.
+     */
+    function buildRegionColorExpression() {
+        const matchExpr = ['match', ['get', 'country_id']];
+        const defaultColor = '#e2e8f0';
+
+        if (countriesData && countriesData.features) {
+            for (const feature of countriesData.features) {
+                const id = feature.properties?.id;
+                const color = feature.properties?.color;
+                if (id != null && color) {
+                    matchExpr.push(id, color);
+                }
+            }
+        }
+
+        matchExpr.push(defaultColor);
+        return matchExpr;
     }
 
     /**
@@ -439,21 +497,30 @@ const CMapsGlobe = (() => {
      * Setup hover and click interactions.
      */
     function setupInteractions() {
-        // Hover
-        map.on('mousemove', LAYERS.COUNTRY_FILL, (e) => {
+        // Hover helper
+        const handleHover = (e, sourceName) => {
             if (e.features.length === 0) return;
             map.getCanvas().style.cursor = 'pointer';
 
+            const countryId = sourceName === 'countries' 
+                ? e.features[0].id 
+                : e.features[0].properties.country_id;
+
+            if (!countryId) return;
+
             // Clear previous hover
-            if (hoveredCountryId !== null) {
-                map.setFeatureState({ source: 'countries', id: hoveredCountryId }, { hover: false });
+            if (hoveredCountryId !== null && hoveredCountryId !== countryId) {
+                clearHoverState();
             }
 
-            hoveredCountryId = e.features[0].id;
-            map.setFeatureState({ source: 'countries', id: hoveredCountryId }, { hover: true });
+            hoveredCountryId = countryId;
+            setCountryHoverState(countryId, true);
 
-            // Show popup
-            const props = e.features[0].properties;
+            // Find country properties for popup
+            const feature = countriesData?.features?.find(f => f.id === countryId || f.properties?.id === countryId);
+            if (!feature) return;
+
+            const props = feature.properties;
             const popupContent = `
                 <div class="country-popup">
                     <div class="country-popup-name">
@@ -465,31 +532,41 @@ const CMapsGlobe = (() => {
                         <div class="country-popup-stat"><span>Area</span><span>${CMapsUtils.formatArea(props.area_km2)}</span></div>
                         ${props.capital ? `<div class="country-popup-stat"><span>Capital</span><span>${props.capital}</span></div>` : ''}
                     </div>
+                    ${sourceName === 'regions' && e.features[0].properties.name ? `<div class="country-popup-hint">Region: ${e.features[0].properties.name}</div>` : ''}
                     <div class="country-popup-hint">Click for details</div>
                 </div>
             `;
             popup.setLngLat(e.lngLat).setHTML(popupContent).addTo(map);
-        });
+        };
 
-        map.on('mouseleave', LAYERS.COUNTRY_FILL, () => {
+        map.on('mousemove', LAYERS.COUNTRY_FILL, (e) => handleHover(e, 'countries'));
+        map.on('mousemove', LAYERS.REGIONS_FILL, (e) => handleHover(e, 'regions'));
+
+        const handleMouseLeave = () => {
             map.getCanvas().style.cursor = '';
-            if (hoveredCountryId !== null) {
-                map.setFeatureState({ source: 'countries', id: hoveredCountryId }, { hover: false });
-            }
-            hoveredCountryId = null;
+            clearHoverState();
             popup.remove();
-        });
+        };
+
+        map.on('mouseleave', LAYERS.COUNTRY_FILL, handleMouseLeave);
+        map.on('mouseleave', LAYERS.REGIONS_FILL, handleMouseLeave);
 
         // Click
-        map.on('click', LAYERS.COUNTRY_FILL, (e) => {
+        const handleClick = (e, sourceName) => {
             if (e.features.length === 0) return;
-            const feature = e.features[0];
-            selectCountry(feature.id || feature.properties.id);
-        });
+            const countryId = sourceName === 'countries'
+                ? (e.features[0].id || e.features[0].properties.id)
+                : e.features[0].properties.country_id;
+            
+            if (countryId) selectCountry(countryId);
+        };
+
+        map.on('click', LAYERS.COUNTRY_FILL, (e) => handleClick(e, 'countries'));
+        map.on('click', LAYERS.REGIONS_FILL, (e) => handleClick(e, 'regions'));
 
         // Click on empty area → deselect
         map.on('click', (e) => {
-            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_FILL] });
+            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_FILL, LAYERS.REGIONS_FILL] });
             if (features.length === 0) {
                 deselectCountry();
             }
@@ -520,16 +597,51 @@ const CMapsGlobe = (() => {
     }
 
     /**
+     * Set hover state for a country across both sources
+     */
+    function setCountryHoverState(countryId, isHovered) {
+        if (!countryId) return;
+        map.setFeatureState({ source: 'countries', id: countryId }, { hover: isHovered });
+        
+        if (countryToRegions[countryId]) {
+            countryToRegions[countryId].forEach(rId => {
+                map.setFeatureState({ source: 'regions', id: rId }, { hover: isHovered });
+            });
+        }
+    }
+
+    function clearHoverState() {
+        if (hoveredCountryId !== null) {
+            setCountryHoverState(hoveredCountryId, false);
+            hoveredCountryId = null;
+        }
+    }
+
+    /**
+     * Set selected state for a country across both sources
+     */
+    function setCountrySelectedState(countryId, isSelected) {
+        if (!countryId) return;
+        map.setFeatureState({ source: 'countries', id: countryId }, { selected: isSelected });
+        
+        if (countryToRegions[countryId]) {
+            countryToRegions[countryId].forEach(rId => {
+                map.setFeatureState({ source: 'regions', id: rId }, { selected: isSelected });
+            });
+        }
+    }
+
+    /**
      * Select a country by ID.
      */
     function selectCountry(id) {
         // Deselect previous
         if (selectedCountryId !== null) {
-            map.setFeatureState({ source: 'countries', id: selectedCountryId }, { selected: false });
+            setCountrySelectedState(selectedCountryId, false);
         }
 
         selectedCountryId = id;
-        map.setFeatureState({ source: 'countries', id: id }, { selected: true });
+        setCountrySelectedState(id, true);
 
         // Find the feature
         const feature = countriesData?.features?.find(f => f.id === id || f.properties?.id === id);
@@ -547,7 +659,7 @@ const CMapsGlobe = (() => {
      */
     function deselectCountry() {
         if (selectedCountryId !== null) {
-            map.setFeatureState({ source: 'countries', id: selectedCountryId }, { selected: false });
+            setCountrySelectedState(selectedCountryId, false);
             selectedCountryId = null;
         }
         CMapsPanel.hide();
@@ -565,9 +677,12 @@ const CMapsGlobe = (() => {
             const source = map.getSource('countries');
             if (source) {
                 source.setData(countriesData);
-                // Rebuild the color expression
+                // Rebuild the color expression for countries and regions
                 const colorExpr = buildColorExpression(countriesData);
                 map.setPaintProperty(LAYERS.COUNTRY_FILL, 'fill-color', colorExpr);
+                
+                const regionColorExpr = buildRegionColorExpression();
+                map.setPaintProperty(LAYERS.REGIONS_FILL, 'fill-color', regionColorExpr);
             }
             const count = countriesData.features?.length || 0;
             document.getElementById('country-count').textContent = `${count} countries`;
@@ -593,13 +708,13 @@ const CMapsGlobe = (() => {
      */
     function toggleLayer(layerKey, visible) {
         const layerMap = {
-            'countries': [LAYERS.COUNTRY_FILL],
+            'countries': [LAYERS.COUNTRY_FILL, LAYERS.REGIONS_FILL],
             'borders': [LAYERS.COUNTRY_BORDER],
             'rivers': [LAYERS.RIVERS],
             'lakes': [LAYERS.LAKES],
             'mountains': [LAYERS.MOUNTAINS],
             'cities': [LAYERS.CITIES, LAYERS.CITIES_LABEL],
-            'regions': [LAYERS.REGIONS_FILL, LAYERS.REGIONS_BORDER],
+            'regions': [LAYERS.REGIONS_BORDER],
             'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS_LABEL],
         };
 
