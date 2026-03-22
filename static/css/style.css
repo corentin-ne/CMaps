@@ -639,6 +639,20 @@ input, button, select, textarea {
     background: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Layer group labels ── */
+.layer-group-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.35);
+    padding: 10px var(--space-md) 4px;
+    user-select: none;
+}
+.layer-group-label:first-child {
+    padding-top: 4px;
+}
+
 /* ── Animated wave swatch (miniature version of the map effect) ── */
 .layer-swatch-wave {
     background: linear-gradient(135deg, #00acc1, #4dd0e1);
@@ -712,7 +726,7 @@ input, button, select, textarea {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    z-index: 1;
+    z-index: 10;
     background: radial-gradient(
         ellipse 70% 70% at 50% 48%,
         transparent 55%,
@@ -720,6 +734,14 @@ input, button, select, textarea {
         rgba(2, 5, 10, 0.55) 100%
     );
     animation: atmospherePulse 10s ease-in-out infinite;
+}
+
+/* ── Particle animation canvas — sits above MapLibre canvas, below vignette ── */
+#particle-canvas {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 5;
 }
 @keyframes atmospherePulse {
     0%, 100% { opacity: 0.65; }

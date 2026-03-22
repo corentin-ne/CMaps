@@ -19,3 +19,4 @@ data/cmaps.db
 .DS_Store
 Thumbs.db
 /data/cmaps.db
+/static/data/ne_110m_rivers_lake_centerlines.geojson

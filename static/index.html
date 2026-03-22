@@ -21,7 +21,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- App CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=2">
+    <link rel="stylesheet" href="/static/css/style.css?v=6">
 </head>
 <body>
     <!-- ═══════════ TOP BAR ═══════════ -->
@@ -136,6 +136,8 @@
             </button>
         </div>
         <div class="layers-toolbox-body">
+            <!-- ─── Political ─── -->
+            <div class="layer-group-label">Political</div>
             <label class="layer-toggle-row">
                 <input type="checkbox" data-layer="countries" checked>
                 <span class="layer-swatch" style="background: #7c9eb2"></span>
@@ -146,6 +148,32 @@
                 <span class="layer-swatch" style="background: #ffffff"></span>
                 <span class="layer-name">Borders</span>
             </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="regions" checked>
+                <span class="layer-swatch" style="background: #a8a29e; border-style: dashed"></span>
+                <span class="layer-name">Regions</span>
+            </label>
+
+            <!-- ─── Places ─── -->
+            <div class="layer-group-label">Places</div>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="capitals" checked>
+                <span class="layer-swatch" style="background: #ef4444; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)"></span>
+                <span class="layer-name">Capitals</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="cities" checked>
+                <span class="layer-swatch" style="background: #cbd5e1; border-radius: 50%"></span>
+                <span class="layer-name">Cities</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="urban-areas" checked>
+                <span class="layer-swatch" style="background: #f59e0b"></span>
+                <span class="layer-name">Urban Areas</span>
+            </label>
+
+            <!-- ─── Physical ─── -->
+            <div class="layer-group-label">Physical</div>
             <label class="layer-toggle-row">
                 <input type="checkbox" data-layer="rivers" checked>
                 <span class="layer-swatch" style="background: #4a90d9"></span>
@@ -167,26 +195,6 @@
                 <span class="layer-name">Mountain Ranges</span>
             </label>
             <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="regions" checked>
-                <span class="layer-swatch" style="background: #a8a29e; border-style: dashed"></span>
-                <span class="layer-name">Regions</span>
-            </label>
-            <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="capitals" checked>
-                <span class="layer-swatch" style="background: #ef4444; clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)"></span>
-                <span class="layer-name">Capitals</span>
-            </label>
-            <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="cities" checked>
-                <span class="layer-swatch" style="background: #ffd700"></span>
-                <span class="layer-name">Cities</span>
-            </label>
-            <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="urban-areas" checked>
-                <span class="layer-swatch" style="background: #f59e0b"></span>
-                <span class="layer-name">Urban Areas</span>
-            </label>
-            <label class="layer-toggle-row">
                 <input type="checkbox" data-layer="reefs" checked>
                 <span class="layer-swatch" style="background: #06b6d4"></span>
                 <span class="layer-name">Reefs</span>
@@ -197,13 +205,8 @@
                 <span class="layer-name">Parks &amp; Protected</span>
             </label>
 
-            <div class="layer-toggle-divider"></div>
-
-            <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="coastal-waves" checked>
-                <span class="layer-swatch layer-swatch-wave"></span>
-                <span class="layer-name">Coastal Waves</span>
-            </label>
+            <!-- ─── Effects ─── -->
+            <div class="layer-group-label">Effects</div>
             <label class="layer-toggle-row">
                 <input type="checkbox" data-layer="auto-rotate">
                 <span class="layer-swatch" style="background: transparent; border: 1.5px dashed rgba(255,255,255,0.3)">↻</span>
@@ -560,7 +563,8 @@
 
     <!-- Application Scripts -->
     <script src="/static/js/utils.js?v=3"></script>
-    <script src="/static/js/globe.js?v=12"></script>
+    <script src="/static/js/particles.js?v=3"></script>
+    <script src="/static/js/globe.js?v=22"></script>
     <script src="/static/js/panels.js?v=5"></script>
     <script src="/static/js/search.js?v=4"></script>
     <script src="/static/js/editor.js?v=6"></script>

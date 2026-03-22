@@ -20,7 +20,6 @@ const CMapsGlobe = (() => {
     let _animFrame = null;
     let _animLastTick = 0;
     const _ANIM_INTERVAL = 80; // ~12 fps for paint property updates
-    let _wavesEnabled = true;
     let _idleTimer = null;
     let _autoRotate = false;
     let _userInteracting = false;
@@ -49,10 +48,6 @@ const CMapsGlobe = (() => {
         URBAN_FILL: 'urban-areas-fill',
         REEFS_LINE: 'reefs-line',
         PARKS_FILL: 'parks-fill',
-        // Animated coastal wave glow
-        COASTAL_WAVE_1: 'coastal-wave-1',
-        COASTAL_WAVE_2: 'coastal-wave-2',
-        COASTAL_WAVE_3: 'coastal-wave-3',
     };
 
     // Zoom thresholds for data resolution switching
@@ -93,9 +88,9 @@ const CMapsGlobe = (() => {
                 ],
                 glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
             },
-            center: [15, 30],
+            center: [15, 25],
             zoom: 1.8,
-            pitch: 35,
+            pitch: 0,
             minZoom: 0.5,
             maxZoom: 15,
             maxPitch: 75, // Allow steeper viewing angles
@@ -156,17 +151,16 @@ const CMapsGlobe = (() => {
             if (lowPoly) addLowPolyLayer(lowPoly);
 
             addCountryLayers(countriesData);
-            _addCoastalWaveLayers();
 
             // Initial zoom for scale-dependent loading
             const initZoom = map.getZoom();
 
-            const [rivers, lakes, mountains, mountainRanges, cities, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
+            const [rivers, lakes, mountains, mountainRanges, _unused, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
                 CMapsUtils.api(`/api/features/rivers?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api(`/api/features/lakes?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountains').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountain-ranges').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/cities?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                Promise.resolve(null), // cities loaded via URL source below
                 CMapsUtils.api('/api/regions/geojson').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/capitals?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api(`/api/features/urban-areas?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
@@ -194,14 +188,21 @@ const CMapsGlobe = (() => {
             });
 
             addRegionsLayer(regionsData);
-            addCitiesLayer(cities);
+
+            // Cities — let MapLibre fetch the GeoJSON itself via URL.
+            // This bypasses ALL JavaScript data handling (IndexedDB, fetch, JSON.parse).
+            addCitiesLayer();
+
             addCapitalsLayer(capitals);
             addUrbanAreasLayer(urbanAreas);
             addReefsLayer(reefs);
             addParksLayer(parks);
 
-            // Start ambient map animations (coastal waves, capital pulse, etc.)
+            // Start ambient map animations (capital pulse, ocean breathing, etc.)
             _startAnimations();
+
+            // Particles disabled
+            // CMapsParticles.init(map);
 
             // Set up scale-dependent data switching on zoom change
             _setupScaleSwitching();
@@ -277,55 +278,8 @@ const CMapsGlobe = (() => {
     }
 
     // ═══════════════════════════════════════════════════════
-    //  AMBIENT ANIMATIONS: Coastal waves, capital pulse, etc.
+    //  AMBIENT ANIMATIONS: Capital pulse, ocean breathing, etc.
     // ═══════════════════════════════════════════════════════
-
-    /**
-     * Add 3 concentric glow line layers on country borders.
-     * Creates a soft, pulsing coastal-wave shimmer at globe zoom levels.
-     */
-    function _addCoastalWaveLayers() {
-        // Wave 1: tight bright inner glow — most visible
-        map.addLayer({
-            id: LAYERS.COASTAL_WAVE_1,
-            type: 'line',
-            source: 'countries',
-            paint: {
-                'line-color': '#67e8f9',
-                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 1.2, 3, 2.5, 8, 4],
-                'line-opacity': 0.45,
-                'line-blur': 1.5,
-                'line-dasharray': [4, 3],
-            },
-        }, LAYERS.COUNTRY_BORDER);
-
-        // Wave 2: medium spread
-        map.addLayer({
-            id: LAYERS.COASTAL_WAVE_2,
-            type: 'line',
-            source: 'countries',
-            paint: {
-                'line-color': '#22d3ee',
-                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 3, 3, 5, 8, 8],
-                'line-opacity': 0.22,
-                'line-blur': 3,
-                'line-dasharray': [6, 4],
-            },
-        }, LAYERS.COUNTRY_BORDER);
-
-        // Wave 3: wide outer halo
-        map.addLayer({
-            id: LAYERS.COASTAL_WAVE_3,
-            type: 'line',
-            source: 'countries',
-            paint: {
-                'line-color': '#06b6d4',
-                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 5, 3, 9, 8, 14],
-                'line-opacity': 0.10,
-                'line-blur': 6,
-            },
-        }, LAYERS.COUNTRY_BORDER);
-    }
 
     /** Kick off the master animation loop + idle rotation tracking. */
     function _startAnimations() {
@@ -343,7 +297,6 @@ const CMapsGlobe = (() => {
 
         const t = timestamp / 1000; // elapsed seconds
 
-        if (_wavesEnabled) _updateCoastalWaves(t);
         _updateCapitalPulse(t);
         _updateOceanBreathing(t);
 
@@ -352,45 +305,15 @@ const CMapsGlobe = (() => {
         }
     }
 
-    /** Animated coastal wave glow — pulsing opacity + drifting translate for movement. */
-    function _updateCoastalWaves(t) {
-        if (!map.getLayer(LAYERS.COASTAL_WAVE_1)) return;
-
-        const zoom = map.getZoom();
-        // Fade out at high zoom (inland borders visible, glow looks wrong)
-        const zoomFade = zoom < 5 ? 1.0 : zoom < 9 ? (9 - zoom) / 4 : 0;
-        if (zoomFade <= 0.01) return;
-
-        // Slow phase — ~9 second full cycle
-        const phase = t * 0.7;
-
-        // Opacity pulses — clearly visible range
-        const o1 = (0.35 + 0.15 * Math.sin(phase))          * zoomFade;
-        const o2 = (0.18 + 0.10 * Math.sin(phase - 1.2))    * zoomFade;
-        const o3 = (0.08 + 0.05 * Math.sin(phase - 2.4))    * zoomFade;
-
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_1, 'line-opacity', o1);
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-opacity', o2);
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_3, 'line-opacity', o3);
-
-        // Width breathing — inner wave pulses width gently
-        const wPulse = 0.9 + 0.2 * Math.sin(phase * 1.1);
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-blur', 2.5 + 1.5 * Math.sin(phase - 0.8));
-
-        // Translate drift — gives illusion of outward wave movement
-        const drift = Math.sin(phase * 0.5) * 1.2;
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-translate', [drift, drift * 0.5]);
-        map.setPaintProperty(LAYERS.COASTAL_WAVE_3, 'line-translate', [drift * 1.8, drift * 0.9]);
-    }
-
-    /** Breathing halo on capital cities — slow pulse. */
+    /** Breathing halo on capital cities — slow pulse on ring stroke. */
     function _updateCapitalPulse(t) {
         const haloId = LAYERS.CAPITALS + '-halo';
         if (!map.getLayer(haloId)) return;
 
-        // ~7-second cycle, range 0.10 – 1.0
-        const pulse = 0.55 + 0.45 * Math.sin(t * 0.9);
-        map.setPaintProperty(haloId, 'circle-opacity', pulse);
+        // ~7-second cycle for stroke opacity 0.15–0.55
+        const pulse = 0.35 + 0.20 * Math.sin(t * 0.9);
+        const strokeAlpha = `rgba(239, 68, 68, ${pulse.toFixed(3)})`;
+        map.setPaintProperty(haloId, 'circle-stroke-color', strokeAlpha);
     }
 
     /** Very subtle ocean background colour cycling. */
@@ -821,92 +744,38 @@ const CMapsGlobe = (() => {
         });
     }
 
-    function addCitiesLayer(geojson) {
-        map.addSource('cities', { type: 'geojson', data: geojson });
+    function addCitiesLayer() {
+        // Let MapLibre fetch the GeoJSON directly via URL.
+        // This completely bypasses JavaScript data handling.
+        map.addSource('cities', {
+            type: 'geojson',
+            data: '/api/cities?zoom=20',
+        });
 
-        // City glow — subtle luminous halo, filtered by zoom/population
         map.addLayer({
             id: LAYERS.CITIES + '-glow',
             type: 'circle',
             source: 'cities',
             paint: {
-                'circle-radius': [
-                    'interpolate', ['linear'], ['zoom'],
-                    3, 5, 6, 8, 12, 14,
-                ],
-                'circle-color': ['case', ['get', 'is_capital'],
-                    'rgba(251, 191, 36, 0.1)',
-                    'rgba(148, 163, 184, 0.06)'
-                ],
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 5, 6, 6, 10, 8, 14, 10],
+                'circle-color': 'rgba(148, 163, 184, 0.08)',
                 'circle-blur': 1,
-                'circle-stroke-width': 0,
-                'circle-opacity': [
-                    'step', ['zoom'],
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.4],
-                    3,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.4],
-                    5,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.4],
-                    7,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.5],
-                    9,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.5],
-                    11,
-                    0.5
-                ],
             },
-            minzoom: 2,
         });
 
-        // City dots — clean flat circles with hard zoom/population thresholds
         map.addLayer({
             id: LAYERS.CITIES,
             type: 'circle',
             source: 'cities',
             paint: {
-                'circle-radius': [
-                    'interpolate', ['linear'], ['zoom'],
-                    0, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
-                        0, 0.8, 1000000, 1.5, 5000000, 2.5, 10000000, 3.5],
-                    6, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
-                        0, 1.5, 500000, 2.5, 1000000, 4, 10000000, 6],
-                    12, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
-                        0, 2.5, 100000, 3.5, 1000000, 5, 10000000, 8],
-                ],
-                'circle-color': ['case', ['get', 'is_capital'], '#fbbf24', '#cbd5e1'],
-                'circle-stroke-width': [
-                    'interpolate', ['linear'], ['zoom'],
-                    0, 0.5, 6, 1, 12, 1.5,
-                ],
-                'circle-stroke-color': ['case',
-                    ['get', 'is_capital'], 'rgba(120, 80, 0, 0.5)',
-                    'rgba(15, 23, 42, 0.4)'
-                ],
-                'circle-opacity': [
-                    'step', ['zoom'],
-                    // zoom < 3: only megacities (5M+)
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.8],
-                    3,
-                    // zoom 3-5: major cities (1M+)
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.8],
-                    5,
-                    // zoom 5-7: large cities (300K+)
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.8],
-                    7,
-                    // zoom 7-9: medium cities (100K+)
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.85],
-                    9,
-                    // zoom 9-11: small cities (30K+)
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.85],
-                    11,
-                    // zoom 11+: all
-                    0.9
-                ],
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 2, 6, 3, 10, 4, 14, 6],
+                'circle-color': '#cbd5e1',
+                'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 10, 1.0, 14, 1.3],
+                'circle-stroke-color': 'rgba(15, 23, 42, 0.45)',
+                'circle-opacity': 0.92,
             },
-            minzoom: 2,
         });
 
-        // City labels — same zoom/population thresholds
         map.addLayer({
             id: LAYERS.CITIES_LABEL,
             type: 'symbol',
@@ -914,38 +783,19 @@ const CMapsGlobe = (() => {
             layout: {
                 'text-field': ['get', 'name'],
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
-                'text-size': [
-                    'interpolate', ['linear'], ['zoom'],
-                    3, 9, 6, 11, 10, 13,
-                ],
-                'text-offset': [0, 1.0],
+                'text-size': ['interpolate', ['linear'], ['zoom'], 3, 9, 8, 10, 12, 13],
+                'text-offset': [0, 1.2],
                 'text-anchor': 'top',
                 'text-allow-overlap': false,
                 'text-optional': true,
                 'text-max-width': 8,
-                'text-letter-spacing': 0.02,
             },
             paint: {
-                'text-color': ['case', ['get', 'is_capital'], '#fde68a', '#c8d6e5'],
-                'text-halo-color': 'rgba(5, 10, 20, 0.9)',
+                'text-color': '#c8d6e5',
+                'text-halo-color': 'rgba(5, 10, 20, 0.92)',
                 'text-halo-width': 1.8,
                 'text-halo-blur': 0.5,
-                'text-opacity': [
-                    'step', ['zoom'],
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.8],
-                    3,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.8],
-                    5,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.8],
-                    7,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.9],
-                    9,
-                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.9],
-                    11,
-                    1
-                ],
             },
-            minzoom: 3,
         });
     }
 
@@ -1024,91 +874,128 @@ const CMapsGlobe = (() => {
     function addCapitalsLayer(geojson) {
         map.addSource('capitals', { type: 'geojson', data: geojson });
 
-        // Outer halo for capitals — subtle prominence ring
+        // ── Outer glow halo — pulsing ring (animated in _updateCapitalPulse) ──
         map.addLayer({
             id: LAYERS.CAPITALS + '-halo',
             type: 'circle',
             source: 'capitals',
+            filter: ['==', ['get', 'is_country_capital'], true],
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    0, ['case', ['get', 'is_country_capital'], 7, 5],
-                    5, ['case', ['get', 'is_country_capital'], 11, 7],
-                    10, ['case', ['get', 'is_country_capital'], 15, 9],
+                    0, 12,  3, 16,  6, 22,  10, 30,
                 ],
-                'circle-color': [
-                    'case',
-                    ['get', 'is_country_capital'], 'rgba(239, 68, 68, 0.12)',
-                    'rgba(248, 250, 252, 0.08)',
+                'circle-color': 'rgba(239, 68, 68, 0.0)',
+                'circle-stroke-width': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 1.5, 6, 2.5, 10, 3,
                 ],
-                'circle-blur': 1,
-                'circle-stroke-width': 0,
+                'circle-stroke-color': 'rgba(239, 68, 68, 0.35)',
+                'circle-blur': 0.6,
             },
             minzoom: 1,
         });
 
-        // Main capital dot — clean, no blur
+        // ── Star marker for country capitals — unicode ★ symbol ──
+        map.addLayer({
+            id: LAYERS.CAPITALS + '-star',
+            type: 'symbol',
+            source: 'capitals',
+            filter: ['==', ['get', 'is_country_capital'], true],
+            layout: {
+                'text-field': '★',
+                'text-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 14,  3, 18,  6, 24,  10, 30,
+                ],
+                'text-allow-overlap': true,
+                'text-ignore-placement': true,
+                'text-padding': 0,
+            },
+            paint: {
+                'text-color': '#ef4444',
+                'text-halo-color': 'rgba(127, 29, 29, 0.9)',
+                'text-halo-width': 1.5,
+            },
+            minzoom: 0,
+        });
+
+        // ── Main dot for non-country capitals (regional/admin capitals) ──
         map.addLayer({
             id: LAYERS.CAPITALS,
             type: 'circle',
             source: 'capitals',
+            filter: ['!=', ['get', 'is_country_capital'], true],
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    0, ['case', ['get', 'is_country_capital'], 3.5, 2],
-                    5, ['case', ['get', 'is_country_capital'], 5.5, 3.5],
-                    10, ['case', ['get', 'is_country_capital'], 8, 5],
+                    0, 2,  5, 3.5,  10, 5,
                 ],
-                'circle-color': [
-                    'case',
-                    ['get', 'is_country_capital'], '#ef4444',
-                    '#f1f5f9',
-                ],
+                'circle-color': '#f1f5f9',
                 'circle-stroke-width': [
                     'interpolate', ['linear'], ['zoom'],
-                    0, 1,
-                    8, 2,
+                    0, 0.8,  8, 1.5,
                 ],
-                'circle-stroke-color': [
-                    'case',
-                    ['get', 'is_country_capital'], 'rgba(127, 29, 29, 0.7)',
-                    'rgba(15, 23, 42, 0.5)',
-                ],
+                'circle-stroke-color': 'rgba(15, 23, 42, 0.5)',
                 'circle-opacity': 1,
             },
-            minzoom: 1,
+            minzoom: 3,
         });
 
+        // ── Country capital label — bold, uppercase, early visibility ──
         map.addLayer({
             id: LAYERS.CAPITALS_LABEL,
             type: 'symbol',
             source: 'capitals',
+            filter: ['==', ['get', 'is_country_capital'], true],
+            layout: {
+                'text-field': ['upcase', ['get', 'name']],
+                'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+                'text-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 11,  4, 13,  8, 16,  12, 18,
+                ],
+                'text-offset': [0, 1.4],
+                'text-anchor': 'top',
+                'text-allow-overlap': false,
+                'text-optional': true,
+                'text-letter-spacing': 0.08,
+            },
+            paint: {
+                'text-color': '#fca5a5',
+                'text-halo-color': 'rgba(5, 10, 20, 0.95)',
+                'text-halo-width': 2.5,
+                'text-halo-blur': 0.3,
+            },
+            minzoom: 1,
+        });
+
+        // ── Non-country capital label (regional/admin) ──
+        map.addLayer({
+            id: LAYERS.CAPITALS_LABEL + '-minor',
+            type: 'symbol',
+            source: 'capitals',
+            filter: ['!=', ['get', 'is_country_capital'], true],
             layout: {
                 'text-field': ['get', 'name'],
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
                 'text-size': [
                     'interpolate', ['linear'], ['zoom'],
-                    0, 10,
-                    6, 13,
-                    10, 16,
+                    0, 9,  4, 11,  8, 13,  12, 15,
                 ],
-                'text-offset': [0, 1.3],
+                'text-offset': [0, 1.2],
                 'text-anchor': 'top',
                 'text-allow-overlap': false,
                 'text-optional': true,
                 'text-letter-spacing': 0.03,
             },
             paint: {
-                'text-color': [
-                    'case',
-                    ['get', 'is_country_capital'], '#fecaca',
-                    '#e2e8f0',
-                ],
+                'text-color': '#e2e8f0',
                 'text-halo-color': 'rgba(5, 10, 20, 0.9)',
-                'text-halo-width': 2,
+                'text-halo-width': 1.8,
                 'text-halo-blur': 0.3,
             },
-            minzoom: 1,
+            minzoom: 3,
         });
     }
 
@@ -1332,16 +1219,18 @@ const CMapsGlobe = (() => {
             cityPopup.remove();
         });
 
-        // Capitals layer hover + click
-        map.on('mousemove', LAYERS.CAPITALS, (e) => handleCityHover(e, 'capital'));
-        map.on('mouseleave', LAYERS.CAPITALS, handleCityLeave);
-        map.on('click', LAYERS.CAPITALS, (e) => {
-            if (!e.features.length) return;
-            _cityClickConsumed = true;
-            const coords = e.features[0].geometry.coordinates;
-            flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
-            cityPopup.remove();
-        });
+        // Capitals layer hover + click (star layer for country capitals, circle for others)
+        for (const capLayer of [LAYERS.CAPITALS, LAYERS.CAPITALS + '-star']) {
+            map.on('mousemove', capLayer, (e) => handleCityHover(e, 'capital'));
+            map.on('mouseleave', capLayer, handleCityLeave);
+            map.on('click', capLayer, (e) => {
+                if (!e.features.length) return;
+                _cityClickConsumed = true;
+                const coords = e.features[0].geometry.coordinates;
+                flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
+                cityPopup.remove();
+            });
+        }
 
         const handleClick = (e, sourceName) => {
             if (_cityClickConsumed) { _cityClickConsumed = false; return; }
@@ -1549,15 +1438,14 @@ const CMapsGlobe = (() => {
             'mountain-ranges': [LAYERS.MOUNTAIN_RANGES, LAYERS.MOUNTAIN_RANGES + '-outline', LAYERS.MOUNTAIN_RANGES + '-label'],
             'cities': [LAYERS.CITIES, LAYERS.CITIES + '-glow', LAYERS.CITIES_LABEL],
             'regions': [LAYERS.REGIONS_BORDER],
-            'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS_LABEL],
+            'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS + '-star', LAYERS.CAPITALS_LABEL, LAYERS.CAPITALS_LABEL + '-minor'],
             'urban-areas': [LAYERS.URBAN_FILL, LAYERS.URBAN_FILL + '-outline'],
             'reefs': [LAYERS.REEFS_LINE, LAYERS.REEFS_LINE + '-label'],
             'parks': [LAYERS.PARKS_FILL, LAYERS.PARKS_FILL + '-outline', LAYERS.PARKS_FILL + '-label'],
-            'coastal-waves': [LAYERS.COASTAL_WAVE_1, LAYERS.COASTAL_WAVE_2, LAYERS.COASTAL_WAVE_3],
         };
 
-        // Pause / resume wave animation when toggled
-        if (layerKey === 'coastal-waves') _wavesEnabled = visible;
+        // Particle animation toggles (disabled)
+        if (layerKey === 'shore-waves' || layerKey === 'ocean-currents' || layerKey === 'wind-streams') return;
 
         // Auto-rotate toggle
         if (layerKey === 'auto-rotate') {
