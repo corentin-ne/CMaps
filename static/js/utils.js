@@ -10,23 +10,28 @@ const CMapsUtils = (() => {
     const IDB_STORE = 'api-cache';
     const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minute TTL
     let idb = null;
+    let _idbReady = null; // Shared promise for single init
 
     /**
-     * Open the IndexedDB for caching.
+     * Open the IndexedDB for caching (single init, shared promise).
      */
     function openIDB() {
-        return new Promise((resolve, reject) => {
+        if (_idbReady) return _idbReady;
+        _idbReady = new Promise((resolve) => {
             if (idb) return resolve(idb);
-            const req = indexedDB.open(IDB_NAME, IDB_VERSION);
-            req.onupgradeneeded = () => {
-                const db = req.result;
-                if (!db.objectStoreNames.contains(IDB_STORE)) {
-                    db.createObjectStore(IDB_STORE, { keyPath: 'url' });
-                }
-            };
-            req.onsuccess = () => { idb = req.result; resolve(idb); };
-            req.onerror = () => resolve(null);
+            try {
+                const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(IDB_STORE)) {
+                        db.createObjectStore(IDB_STORE, { keyPath: 'url' });
+                    }
+                };
+                req.onsuccess = () => { idb = req.result; resolve(idb); };
+                req.onerror = () => resolve(null);
+            } catch { resolve(null); }
         });
+        return _idbReady;
     }
 
     async function idbGet(url) {
@@ -121,13 +126,29 @@ const CMapsUtils = (() => {
 
     function throttle(fn, limit = 100) {
         let waiting = false;
+        let pending = null;
         return function (...args) {
             if (!waiting) {
                 fn.apply(this, args);
                 waiting = true;
-                setTimeout(() => { waiting = false; }, limit);
+                setTimeout(() => {
+                    waiting = false;
+                    if (pending) {
+                        fn.apply(this, pending);
+                        pending = null;
+                    }
+                }, limit);
+            } else {
+                pending = args;
             }
         };
+    }
+
+    /**
+     * Batch DOM reads/writes into the next animation frame.
+     */
+    function nextFrame(fn) {
+        return requestAnimationFrame(fn);
     }
 
     function lightenColor(hex, amount = 0.3) {
@@ -264,6 +285,7 @@ const CMapsUtils = (() => {
         formatGDP,
         debounce,
         throttle,
+        nextFrame,
         lightenColor,
         darkenColor,
         api,

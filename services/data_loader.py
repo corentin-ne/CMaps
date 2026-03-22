@@ -111,6 +111,84 @@ def load_countries(db: Session, geojson_path: str):
 # ═══════════════════════════════════════════════════════
 
 
+def _name_polygon_parts(geoms_to_process, name, places_lookup):
+    """Generate meaningful names for each polygon part of a multi-part region.
+    Instead of 'Galway (3)' → 'Galway (Inishmore)' using nearby populated places.
+    The largest polygon keeps the bare name; smaller parts get named by nearby places
+    or cardinal direction from the mainland."""
+    if len(geoms_to_process) <= 1:
+        return [name]
+
+    from shapely.geometry import shape as shp, Point as Pt
+
+    # Find the largest polygon (mainland)
+    areas = [(calculate_area_km2(g), i) for i, g in enumerate(geoms_to_process)]
+    largest_idx = max(areas, key=lambda x: x[0])[1]
+
+    try:
+        mainland_shape = shp(geoms_to_process[largest_idx])
+        mainland_centroid = mainland_shape.centroid
+    except Exception:
+        mainland_centroid = None
+
+    names = []
+    used_place_names = set()
+
+    for i, geom in enumerate(geoms_to_process):
+        if i == largest_idx:
+            names.append(name)  # Main body keeps the base name
+            continue
+
+        part_name = None
+
+        # Try to find a populated place within this polygon
+        if places_lookup:
+            try:
+                poly = shp(geom)
+                best_place = None
+                best_pop = -1
+                for place in places_lookup:
+                    pt = Pt(place["coords"][0], place["coords"][1])
+                    if poly.contains(pt) and place["pop"] > best_pop:
+                        if place["name"] not in used_place_names:
+                            best_place = place["name"]
+                            best_pop = place["pop"]
+                if best_place:
+                    part_name = f"{name} ({best_place})"
+                    used_place_names.add(best_place)
+            except Exception:
+                pass
+
+        # Fallback: use cardinal direction from mainland
+        if not part_name and mainland_centroid:
+            try:
+                poly = shp(geom)
+                centroid = poly.centroid
+                dx = centroid.x - mainland_centroid.x
+                dy = centroid.y - mainland_centroid.y
+
+                dirs = []
+                if abs(dy) > 0.05:
+                    dirs.append("N" if dy > 0 else "S")
+                if abs(dx) > 0.05:
+                    dirs.append("E" if dx > 0 else "W")
+                direction = "".join(dirs) if dirs else ""
+
+                if direction:
+                    part_name = f"{name} ({direction} Isle)"
+                else:
+                    part_name = f"{name} (Isle {i + 1})"
+            except Exception:
+                part_name = f"{name} ({i + 1})"
+
+        if not part_name:
+            part_name = f"{name} ({i + 1})"
+
+        names.append(part_name)
+
+    return names
+
+
 def load_regions(db: Session, geojson_path: str):
     """Load admin-1 regions from Natural Earth GeoJSON."""
     if db.query(Region).count() > 0:
@@ -140,6 +218,27 @@ def load_regions(db: Session, geojson_path: str):
         country_lookup_name[c.name.lower()] = c.id
 
     loaded = 0
+
+    # Load populated places for intelligent island/exclave naming
+    _places_path = os.path.join(os.path.dirname(geojson_path), "ne_10m_populated_places_simple.geojson")
+    _places_lookup = []
+    if os.path.exists(_places_path):
+        try:
+            with open(_places_path, "r", encoding="utf-8") as _pf:
+                _places_data = json.load(_pf)
+            for _pf_feat in _places_data.get("features", []):
+                _pg = _pf_feat.get("geometry", {})
+                _pp = _pf_feat.get("properties", {})
+                if _pg.get("type") == "Point" and _pg.get("coordinates"):
+                    _places_lookup.append({
+                        "name": _pp.get("name", ""),
+                        "coords": _pg["coordinates"],
+                        "pop": _pp.get("pop_max", 0) or 0
+                    })
+            print(f"  Loaded {len(_places_lookup)} places for island naming")
+        except Exception as e:
+            print(f"  Warning: Could not load places for naming: {e}")
+
     for feature in features:
         props = feature.get("properties", {})
         geometry = feature.get("geometry")
@@ -184,13 +283,16 @@ def load_regions(db: Session, geojson_path: str):
         else:
             geoms_to_process.append(geometry)
 
+        # Generate meaningful names for multi-part regions (islands, exclaves)
+        part_names = _name_polygon_parts(geoms_to_process, name, _places_lookup)
+
         for i, geom in enumerate(geoms_to_process):
             area_km2 = calculate_area_km2(geom)
             # Skip tiny artifacts unless it's the only one
             if len(geoms_to_process) > 1 and area_km2 < 0.5:
                 continue
 
-            part_name = name if len(geoms_to_process) == 1 else f"{name} ({i+1})"
+            part_name = part_names[i] if i < len(part_names) else f"{name} ({i+1})"
             
             region = Region(
                 name=part_name[:100],

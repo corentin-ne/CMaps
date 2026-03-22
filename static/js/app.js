@@ -87,6 +87,9 @@ const CMapsApp = (() => {
                 case 'n':
                     document.getElementById('btn-new-country')?.click();
                     break;
+                case 'l':
+                    document.getElementById('btn-layers-toggle')?.click();
+                    break;
                 case 'escape':
                     CMapsGlobe.deselectCountry();
                     CMapsEditor.setTool('select');
@@ -139,13 +142,43 @@ const CMapsApp = (() => {
     }
 
     /**
-     * Layer toggle checkboxes.
+     * Layer toggle checkboxes — now lives inside the floating Layers Toolbox.
      */
     function setupLayerToggles() {
-        document.querySelectorAll('.layer-toggle input[data-layer]').forEach(cb => {
+        // Layer toggles inside the toolbox
+        document.querySelectorAll('.layer-toggle-row input[data-layer]').forEach(cb => {
             cb.addEventListener('change', () => {
                 CMapsGlobe.toggleLayer(cb.dataset.layer, cb.checked);
             });
+        });
+
+        // Layers button opens/closes the floating toolbox
+        const btn = document.getElementById('btn-layers-toggle');
+        const toolbox = document.getElementById('layers-toolbox');
+        const closeBtn = document.getElementById('btn-layers-close');
+
+        if (btn && toolbox) {
+            btn.addEventListener('click', () => {
+                toolbox.classList.toggle('hidden');
+                btn.classList.toggle('active', !toolbox.classList.contains('hidden'));
+            });
+        }
+
+        if (closeBtn && toolbox) {
+            closeBtn.addEventListener('click', () => {
+                toolbox.classList.add('hidden');
+                if (btn) btn.classList.remove('active');
+            });
+        }
+
+        // Close toolbox when clicking outside
+        document.addEventListener('click', (e) => {
+            if (toolbox && !toolbox.classList.contains('hidden')) {
+                if (!toolbox.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
+                    toolbox.classList.add('hidden');
+                    if (btn) btn.classList.remove('active');
+                }
+            }
         });
     }
 

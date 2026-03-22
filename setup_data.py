@@ -133,6 +133,125 @@ def download_flags(countries_path: str) -> dict:
     return flag_map
 
 
+# ── ADM0_A3 fallback mappings → flagcdn ISO A2 codes ─────────────────────
+# Used when a country has no valid ISO A2 but we know its ADM0_A3 code
+_ADM0_A3_TO_FLAGCDN = {
+    "XKX": "xk",   # Kosovo
+    "TWN": "tw",   # Taiwan
+    "PSX": "ps",   # Palestine / West Bank
+    "GAZ": "ps",   # Gaza
+    "HKG": "hk",   # Hong Kong
+    "MAC": "mo",   # Macao
+    "PRI": "pr",   # Puerto Rico
+    "GUM": "gu",   # Guam
+    "VIR": "vi",   # U.S. Virgin Islands
+    "ASM": "as",   # American Samoa
+    "MNP": "mp",   # Northern Mariana Islands
+    "ABW": "aw",   # Aruba
+    "CUW": "cw",   # Curacao
+    "SXM": "sx",   # Sint Maarten
+    "BES": "bq",   # Bonaire / Caribbean NL
+    "MAF": "mf",   # Saint Martin (French)
+    "BLM": "bl",   # Saint Barthélemy
+    "GLP": "gp",   # Guadeloupe
+    "MTQ": "mq",   # Martinique
+    "GUF": "gf",   # French Guiana
+    "REU": "re",   # Réunion
+    "MYT": "yt",   # Mayotte
+    "SPM": "pm",   # Saint Pierre & Miquelon
+    "SHN": "sh",   # Saint Helena / Ascension / Tristan da Cunha
+    "IOT": "io",   # British Indian Ocean Territory
+    "PCN": "pn",   # Pitcairn Islands
+    "TKL": "tk",   # Tokelau
+    "NIU": "nu",   # Niue
+    "COK": "ck",   # Cook Islands
+    "CCK": "cc",   # Cocos (Keeling) Islands
+    "CXR": "cx",   # Christmas Island
+    "NFK": "nf",   # Norfolk Island
+    "ESH": "eh",   # Western Sahara
+    "SGS": "gs",   # South Georgia
+    "ATF": "tf",   # French Southern Territories
+    "HMD": "hm",   # Heard & McDonald Islands
+    "ATA": None,   # Antarctica — no flag, skip
+    "CLP": None,   # Clipperton Island — no standard flag
+}
+
+
+def _try_download_flag(code: str) -> bool:
+    """Attempt to download a flag PNG for the given lowercase ISO A2 code.
+    Returns True if the file already exists or was successfully downloaded."""
+    if not code or len(code) != 2:
+        return False
+    code = code.lower()
+    filepath = os.path.join(FLAGS_DIR, f"{code}.png")
+    if os.path.exists(filepath) and os.path.getsize(filepath) > 100:
+        return True
+    os.makedirs(FLAGS_DIR, exist_ok=True)
+    url = f"https://flagcdn.com/w320/{code}.png"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "CMaps/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+        if len(data) < 200:   # flagcdn returns tiny placeholder for unknown codes
+            return False
+        with open(filepath, "wb") as f:
+            f.write(data)
+        return True
+    except Exception:
+        return False
+
+
+def fill_missing_flags(db) -> int:
+    """Scan countries that have no flag_url and try to download their flags.
+    Returns the number of countries updated."""
+    from database import Country
+
+    missing = db.query(Country).filter(
+        (Country.flag_url == None) | (Country.flag_url == '')
+    ).all()
+
+    if not missing:
+        return 0
+
+    print(f"  Filling missing flags for {len(missing)} countries...")
+    updated = 0
+
+    for country in missing:
+        iso2 = (country.iso_code or "").lower().strip()
+        iso3 = (country.iso_a3 or "").upper().strip()
+
+        # Build ordered list of codes to try
+        candidates = []
+        if iso2 and iso2 != "-99" and len(iso2) == 2:
+            candidates.append(iso2)
+
+        # ADM0_A3 lookup
+        mapped = _ADM0_A3_TO_FLAGCDN.get(iso3)
+        if mapped is not None and mapped not in candidates:
+            candidates.append(mapped)
+        elif mapped is None and iso3 in _ADM0_A3_TO_FLAGCDN:
+            continue  # Explicitly marked as "no flag" (Antarctica etc.)
+
+        # Truncated iso_a3 as last resort
+        if iso3 and len(iso3) >= 2:
+            fb = iso3[:2].lower()
+            if fb not in candidates:
+                candidates.append(fb)
+
+        for code in candidates:
+            if _try_download_flag(code):
+                country.flag_url = f"/static/data/flags/{code}.png"
+                updated += 1
+                break
+
+    if updated:
+        db.commit()
+        print(f"  ✓ Filled {updated} missing flag(s)")
+    else:
+        print(f"  ✓ No additional flags found (network may be unavailable)")
+    return updated
+
+
 def setup_data():
     """Download all required Natural Earth datasets and seed the database."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -161,9 +280,9 @@ def setup_data():
     init_db()
     db = SessionLocal()
     try:
-        # Load countries first
+        # Load countries first (50m has more countries including microstates)
         countries_path = os.path.join(
-            DATA_DIR, DATASETS["countries_110m"]["filename"])
+            DATA_DIR, DATASETS["countries_50m"]["filename"])
         load_countries(db, countries_path)
 
         # Load regions
@@ -206,7 +325,10 @@ def seed_flag_urls(db, flag_map: dict):
 
 def reseed_flags():
     """Download flags and update existing database — can be run standalone."""
-    countries_path = os.path.join(DATA_DIR, DATASETS["countries_110m"]["filename"])
+    countries_path = os.path.join(DATA_DIR, DATASETS["countries_50m"]["filename"])
+    if not os.path.exists(countries_path):
+        # Fallback to 110m
+        countries_path = os.path.join(DATA_DIR, DATASETS["countries_110m"]["filename"])
     if not os.path.exists(countries_path):
         print("  ✗ Countries GeoJSON not found. Run full setup first.")
         return False
@@ -227,12 +349,10 @@ def reseed_flags():
 
 def is_data_ready() -> bool:
     """Check if the essential data files exist."""
-    essential = ["countries_110m", "cities"]
-    for key in essential:
-        filepath = os.path.join(DATA_DIR, DATASETS[key]["filename"])
-        if not os.path.exists(filepath):
-            return False
-    return True
+    countries_50m = os.path.join(DATA_DIR, DATASETS["countries_50m"]["filename"])
+    countries_110m = os.path.join(DATA_DIR, DATASETS["countries_110m"]["filename"])
+    cities = os.path.join(DATA_DIR, DATASETS["cities"]["filename"])
+    return (os.path.exists(countries_50m) or os.path.exists(countries_110m)) and os.path.exists(cities)
 
 
 if __name__ == "__main__":

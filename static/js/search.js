@@ -126,20 +126,28 @@ const CMapsSearch = (() => {
             if (items.length === 0) {
                 results.innerHTML = '<div class="empty-state" style="padding:12px">No results found</div>';
             } else {
-                results.innerHTML = items.map((item, i) => `
-                    <div class="search-result-item" data-type="${item.type}" data-id="${item.id || ''}" data-lng="${item.lng || ''}" data-lat="${item.lat || ''}" data-index="${i}">
+                // Use DocumentFragment for efficient DOM insertion
+                const frag = document.createDocumentFragment();
+                items.forEach((item, i) => {
+                    const el = document.createElement('div');
+                    el.className = 'search-result-item';
+                    el.dataset.type = item.type;
+                    el.dataset.id = item.id || '';
+                    el.dataset.lng = item.lng || '';
+                    el.dataset.lat = item.lat || '';
+                    el.dataset.index = i;
+                    el.innerHTML = `
                         <div class="search-result-icon">${item.icon}</div>
                         <div class="search-result-info">
                             <div class="search-result-name">${item.name}</div>
                             <div class="search-result-meta">${item.meta}</div>
                         </div>
-                    </div>
-                `).join('');
-
-                // Click handlers
-                results.querySelectorAll('.search-result-item').forEach(el => {
+                    `;
                     el.addEventListener('click', () => onResultClick(el));
+                    frag.appendChild(el);
                 });
+                results.textContent = '';
+                results.appendChild(frag);
             }
 
             results.classList.add('active');

@@ -18,3 +18,4 @@ data/cmaps.db
 # OS generated files
 .DS_Store
 Thumbs.db
+/data/cmaps.db

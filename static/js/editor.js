@@ -56,6 +56,7 @@ const CMapsEditor = (() => {
      * Set the active editing/navigation tool.
      */
     function setTool(tool) {
+        const previousTool = currentTool;
         currentTool = tool;
 
         // Update UI
@@ -67,13 +68,24 @@ const CMapsEditor = (() => {
 
         if (tool === 'select') {
             CMapsUtils.setStatus('Ready');
+            // If we were in add-regions mode, finalize geometry for the target country
+            if (previousTool === 'add-regions' && regionsReassigned > 0) {
+                const feature = CMapsPanel.getCurrentFeature();
+                if (feature) {
+                    const id = feature.properties?.id || feature.id;
+                    CMapsUtils.api('/api/regions/finalize-geometry', {
+                        method: 'POST',
+                        body: { country_id: id }
+                    }).then(() => CMapsGlobe.refreshCountries()).catch(() => {});
+                }
+            }
             regionsReassigned = 0;
             if (banner) banner.classList.add('hidden');
         } else if (tool === 'add-regions') {
             const feature = CMapsPanel.getCurrentFeature();
             if (feature) {
                 const name = feature.properties?.name || 'the selected country';
-                CMapsUtils.setStatus(`Add Regions mode: Click regions to reassign them to ${name}. Press Escape to exit.`);
+                CMapsUtils.setStatus(`Add Regions mode: Click regions to reassign them to ${name}. Shift+Click = add all parts. Press Escape to exit.`);
                 regionsReassigned = 0;
                 if (banner) {
                     banner.classList.remove('hidden');
@@ -91,8 +103,9 @@ const CMapsEditor = (() => {
 
     /**
      * Handle clicking a region on the globe while tools are active.
+     * Shift+Click = add all sibling parts of a multi-part region.
      */
-    async function handleRegionClick(regionFeature) {
+    async function handleRegionClick(regionFeature, shiftKey = false) {
         if (currentTool === 'add-regions') {
             const countryFeature = CMapsPanel.getCurrentFeature();
             if (!countryFeature) {
@@ -105,42 +118,56 @@ const CMapsEditor = (() => {
             const regionId = regionFeature.properties?.id || regionFeature.id;
             const regionName = regionFeature.properties?.name || 'Region';
 
-            if (regionFeature.properties.country_id === targetCountryId) {
-                // Already belongs to this country
-                return;
-            }
+            // Determine which regions to reassign
+            let regionsToAssign = [{ id: regionId, name: regionName }];
 
-            try {
-                CMapsUtils.setStatus(`Reassigning ${regionName}...`);
-                await CMapsUtils.api('/api/regions/bulk-assign', {
-                    method: 'POST',
-                    body: {
-                        region_ids: [regionId],
-                        country_id: targetCountryId
-                    }
-                });
+            if (shiftKey) {
+                // Shift+Click: add all sibling parts of this multi-part region
+                const siblings = CMapsGlobe.getRegionSiblings(regionName);
+                regionsToAssign = siblings
+                    .filter(f => f.properties.country_id !== targetCountryId)
+                    .map(f => ({ id: f.properties?.id || f.id, name: f.properties?.name }));
 
-                // Refresh map data
-                await Promise.all([
-                    CMapsGlobe.refreshCountries(),
-                    CMapsGlobe.refreshRegions(),
-                ]);
-
-                // Update counter
-                regionsReassigned++;
-                const banner = document.getElementById('mode-banner');
-                if (banner) {
-                    const bannerCount = banner.querySelector('.mode-banner-count');
-                    if (bannerCount) bannerCount.textContent = `${regionsReassigned} region${regionsReassigned !== 1 ? 's' : ''} reassigned`;
+                if (regionsToAssign.length === 0) {
+                    CMapsUtils.toast('All parts already belong to this country', 'info');
+                    return;
                 }
-
-                CMapsUtils.toast(`${regionName} → ${countryFeature.properties?.name}`, 'success', 1500);
-                CMapsUtils.setStatus(`Add Regions mode: ${regionsReassigned} reassigned. Keep clicking or press Escape.`);
-                
-            } catch (err) {
-                CMapsUtils.toast(`Failed to reassign: ${err.message}`, 'error');
-                CMapsUtils.setStatus('Ready');
+            } else {
+                if (regionFeature.properties.country_id === targetCountryId) {
+                    return; // Already belongs to this country
+                }
             }
+
+            const regionIds = regionsToAssign.map(r => r.id);
+            const label = regionsToAssign.length > 1
+                ? `${regionsToAssign.length} parts of ${regionName.replace(/\s*\([^)]*\)$/, '')}`
+                : regionName;
+
+            // ── Instant local update — color changes in the same frame ──
+            CMapsGlobe.updateRegionCountryId(regionIds, targetCountryId);
+
+            // Update counter immediately
+            regionsReassigned += regionsToAssign.length;
+            const banner = document.getElementById('mode-banner');
+            if (banner) {
+                const bannerCount = banner.querySelector('.mode-banner-count');
+                if (bannerCount) bannerCount.textContent = `${regionsReassigned} region${regionsReassigned !== 1 ? 's' : ''} reassigned`;
+            }
+
+            CMapsUtils.toast(`${label} → ${countryFeature.properties?.name}`, 'success', 1500);
+            CMapsUtils.setStatus(`Add Regions mode: ${regionsReassigned} reassigned. Keep clicking or press Escape.`);
+
+            // ── Fire-and-forget API sync — no await, no full refresh ──
+            CMapsUtils.api('/api/regions/bulk-assign', {
+                method: 'POST',
+                body: {
+                    region_ids: regionIds,
+                    country_id: targetCountryId,
+                    defer_geometry: true,
+                }
+            }).catch(err => {
+                CMapsUtils.toast(`Sync error: ${err.message}`, 'error');
+            });
         }
     }
 

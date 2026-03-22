@@ -18,6 +18,9 @@ const CMapsGlobe = (() => {
         COUNTRY_BORDER: 'country-border',
         COUNTRY_HIGHLIGHT: 'country-highlight',
         COUNTRY_OUTLINE: 'country-outline', // glow outline on hover
+        COUNTRY_INTERACT: 'country-fill-interact', // invisible interaction layer
+        COUNTRY_FILL_LOWPOLY: 'country-fill-lowpoly',
+        COUNTRY_BORDER_LOWPOLY: 'country-border-lowpoly',
         RIVERS: 'rivers-line',
         LAKES: 'lakes-fill',
         MOUNTAINS: 'mountains-symbol',
@@ -27,6 +30,7 @@ const CMapsGlobe = (() => {
         REGIONS_BORDER: 'regions-border',
         CAPITALS: 'capitals-symbol',
         CAPITALS_LABEL: 'capitals-label',
+        MOUNTAIN_RANGES: 'mountain-ranges-fill',
         SKY: 'sky-atmosphere',
         UNCLAIMED_PATTERN: 'unclaimed-pattern',
     };
@@ -118,19 +122,27 @@ const CMapsGlobe = (() => {
         CMapsUtils.setStatus('Loading map data...');
         try {
             countriesData = await CMapsUtils.api('/api/countries/geojson');
+
+            // Load 110m low-poly data for the stylized zoomed-out globe view
+            const lowPoly = await fetch('/static/data/ne_110m_admin_0_countries.geojson')
+                .then(r => r.json()).catch(() => null);
+            if (lowPoly) addLowPolyLayer(lowPoly);
+
             addCountryLayers(countriesData);
 
-            const [rivers, lakes, mountains, cities, regions, capitals] = await Promise.all([
+            const [rivers, lakes, mountains, mountainRanges, cities, regions, capitals] = await Promise.all([
                 CMapsUtils.api('/api/features/rivers').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/lakes').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountains').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/cities?zoom=0').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api('/api/features/mountain-ranges').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api('/api/cities?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/regions/geojson').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/capitals?zoom=0').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api('/api/capitals?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
             ]);
 
             addRiversLayer(rivers);
             addLakesLayer(lakes);
+            addMountainRangesLayer(mountainRanges);
             addMountainsLayer(mountains);
 
             regionsData = regions;
@@ -167,8 +179,8 @@ const CMapsGlobe = (() => {
             type: 'geojson',
             data: geojson,
             promoteId: 'id',
-            tolerance: 1.2,
-            buffer: 0
+            tolerance: 0.8,
+            buffer: 128
         });
 
         map.addLayer({
@@ -179,12 +191,25 @@ const CMapsGlobe = (() => {
                 'fill-color': colorExpression,
                 'fill-opacity': [
                     'case',
-                    ['boolean', ['feature-state', 'selected'], false], 0.9,
-                    ['boolean', ['feature-state', 'hover'], false], 0.75,
-                    0.6
+                    ['boolean', ['feature-state', 'selected'], false],
+                        ['interpolate', ['linear'], ['zoom'], 0, 0, 3, 0.4, 5, 0.9, 8, 0.45],
+                    ['boolean', ['feature-state', 'hover'], false],
+                        ['interpolate', ['linear'], ['zoom'], 0, 0, 3, 0.3, 5, 0.8, 8, 0.35],
+                    ['interpolate', ['linear'], ['zoom'], 0, 0, 3, 0.2, 5, 0.65, 8, 0.2]
                 ],
             },
-            maxzoom: 4,
+            // No maxzoom — ensures small countries (Liechtenstein, Andorra, etc.) remain clickable
+        });
+
+        // Invisible interaction layer — guarantees country click/hover at all zoom levels
+        map.addLayer({
+            id: LAYERS.COUNTRY_INTERACT,
+            type: 'fill',
+            source: 'countries',
+            paint: {
+                'fill-color': '#000000',
+                'fill-opacity': 0,
+            },
         });
 
         // Glow outline layer — thicker, colored line under hover/selected countries
@@ -208,12 +233,13 @@ const CMapsGlobe = (() => {
                 'line-blur': 3,
                 'line-opacity': [
                     'case',
-                    ['boolean', ['feature-state', 'selected'], false], 0.8,
-                    ['boolean', ['feature-state', 'hover'], false], 0.6,
+                    ['boolean', ['feature-state', 'selected'], false],
+                        ['interpolate', ['linear'], ['zoom'], 0, 0.8, 6, 0.6, 9, 0.2],
+                    ['boolean', ['feature-state', 'hover'], false],
+                        ['interpolate', ['linear'], ['zoom'], 0, 0.6, 6, 0.4, 9, 0.1],
                     0
                 ],
             },
-            maxzoom: 4,
         });
 
         map.addLayer({
@@ -232,8 +258,13 @@ const CMapsGlobe = (() => {
                     ['boolean', ['feature-state', 'hover'], false], 1.5,
                     0.6
                 ],
+                'line-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 1,
+                    6, 0.6,
+                    9, 0.15
+                ],
             },
-            maxzoom: 4,
         });
     }
 
@@ -252,6 +283,68 @@ const CMapsGlobe = (() => {
         }
 
         matchExpr.push(defaultColor);
+        return matchExpr;
+    }
+
+    /**
+     * Add a low-poly 110m country layer for the stylized zoomed-out globe.
+     * Cross-fades with the detailed DB country layer around zoom 3-5.
+     */
+    function addLowPolyLayer(geojson) {
+        const colorExpr = buildLowPolyColorExpression();
+
+        map.addSource('countries-lowpoly', {
+            type: 'geojson',
+            data: geojson,
+            tolerance: 1.5,
+        });
+
+        map.addLayer({
+            id: LAYERS.COUNTRY_FILL_LOWPOLY,
+            type: 'fill',
+            source: 'countries-lowpoly',
+            paint: {
+                'fill-color': colorExpr,
+                'fill-opacity': ['interpolate', ['linear'], ['zoom'],
+                    0, 0.7, 2.5, 0.55, 3.5, 0.1, 4.2, 0
+                ],
+            },
+            maxzoom: 4.5,
+        });
+
+        map.addLayer({
+            id: LAYERS.COUNTRY_BORDER_LOWPOLY,
+            type: 'line',
+            source: 'countries-lowpoly',
+            paint: {
+                'line-color': 'rgba(255, 255, 255, 0.35)',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 2.5, 0.8, 4, 0.3],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'],
+                    0, 0.9, 2.5, 0.6, 3.5, 0.15, 4.2, 0
+                ],
+            },
+            maxzoom: 4.5,
+        });
+    }
+
+    /**
+     * Build color expression for the 110m low-poly layer using ADM0_A3 matching.
+     */
+    function buildLowPolyColorExpression() {
+        const isoToColor = {};
+        if (countriesData?.features) {
+            for (const f of countriesData.features) {
+                const p = f.properties;
+                if (p?.iso_a3 && p.iso_a3 !== '-99' && p?.color) {
+                    isoToColor[p.iso_a3] = p.color;
+                }
+            }
+        }
+        const matchExpr = ['match', ['get', 'ADM0_A3']];
+        for (const [iso, color] of Object.entries(isoToColor)) {
+            matchExpr.push(iso, color);
+        }
+        matchExpr.push('#e2e8f0');
         return matchExpr;
     }
 
@@ -332,6 +425,75 @@ const CMapsGlobe = (() => {
         });
     }
 
+    function addMountainRangesLayer(geojson) {
+        if (!geojson.features || geojson.features.length === 0) return;
+
+        map.addSource('mountain-ranges', { type: 'geojson', data: geojson, tolerance: 1.0 });
+
+        // Semi-transparent fill with earthy brown tones
+        map.addLayer({
+            id: LAYERS.MOUNTAIN_RANGES,
+            type: 'fill',
+            source: 'mountain-ranges',
+            paint: {
+                'fill-color': [
+                    'interpolate', ['linear'],
+                    ['get', 'avg_elevation'],
+                    800, 'rgba(139, 90, 43, 0.08)',
+                    2000, 'rgba(160, 82, 45, 0.12)',
+                    4000, 'rgba(139, 69, 19, 0.18)',
+                    6000, 'rgba(120, 50, 10, 0.22)',
+                ],
+                'fill-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    1, 0.15,
+                    3, 0.35,
+                    6, 0.25,
+                    10, 0.1,
+                ],
+            },
+            minzoom: 1,
+        });
+
+        // Subtle outline
+        map.addLayer({
+            id: LAYERS.MOUNTAIN_RANGES + '-outline',
+            type: 'line',
+            source: 'mountain-ranges',
+            paint: {
+                'line-color': 'rgba(180, 120, 60, 0.3)',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 1, 0.5, 5, 1.2, 10, 0.5],
+                'line-dasharray': [4, 3],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'], 1, 0.2, 3, 0.5, 8, 0.2],
+            },
+            minzoom: 1.5,
+        });
+
+        // Range name labels
+        map.addLayer({
+            id: LAYERS.MOUNTAIN_RANGES + '-label',
+            type: 'symbol',
+            source: 'mountain-ranges',
+            layout: {
+                'text-field': ['get', 'name'],
+                'text-size': ['interpolate', ['linear'], ['zoom'], 2, 10, 5, 13, 8, 11],
+                'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
+                'text-allow-overlap': false,
+                'text-optional': true,
+                'text-max-width': 10,
+                'text-letter-spacing': 0.15,
+                'text-transform': 'uppercase',
+            },
+            paint: {
+                'text-color': '#c9a87c',
+                'text-halo-color': 'rgba(10, 10, 15, 0.85)',
+                'text-halo-width': 1.5,
+                'text-opacity': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 4, 0.8, 8, 0.5],
+            },
+            minzoom: 2,
+        });
+    }
+
     function addMountainsLayer(geojson) {
         map.addSource('mountains', { type: 'geojson', data: geojson });
 
@@ -398,84 +560,89 @@ const CMapsGlobe = (() => {
     function addCitiesLayer(geojson) {
         map.addSource('cities', { type: 'geojson', data: geojson });
 
-        // Population-based radius: larger cities = bigger dots
-        const popRadius = [
-            'interpolate', ['linear'], ['zoom'],
-            2, [
-                'interpolate', ['linear'],
-                ['coalesce', ['get', 'pop_max'], 0],
-                0, 2,
-                500000, 3,
-                5000000, 5,
-            ],
-            6, [
-                'interpolate', ['linear'],
-                ['coalesce', ['get', 'pop_max'], 0],
-                0, 3,
-                500000, 4.5,
-                5000000, 7,
-            ],
-            12, [
-                'interpolate', ['linear'],
-                ['coalesce', ['get', 'pop_max'], 0],
-                0, 4,
-                500000, 6,
-                5000000, 10,
-            ],
-        ];
+        // City glow — subtle luminous halo, filtered by zoom/population
+        map.addLayer({
+            id: LAYERS.CITIES + '-glow',
+            type: 'circle',
+            source: 'cities',
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    3, 5, 6, 8, 12, 14,
+                ],
+                'circle-color': ['case', ['get', 'is_capital'],
+                    'rgba(251, 191, 36, 0.1)',
+                    'rgba(148, 163, 184, 0.06)'
+                ],
+                'circle-blur': 1,
+                'circle-stroke-width': 0,
+                'circle-opacity': [
+                    'step', ['zoom'],
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.4],
+                    3,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.4],
+                    5,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.4],
+                    7,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.5],
+                    9,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.5],
+                    11,
+                    0.5
+                ],
+            },
+            minzoom: 2,
+        });
 
-        // Outer ring — subtle glow / ambient halo
+        // City dots — clean flat circles with hard zoom/population thresholds
         map.addLayer({
             id: LAYERS.CITIES,
             type: 'circle',
             source: 'cities',
             paint: {
-                'circle-radius': ['+', popRadius, 3],
-                'circle-color': [
-                    'case',
-                    ['get', 'is_capital'], 'rgba(255, 215, 0, 0.15)',
-                    'rgba(200, 210, 240, 0.12)',
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
+                        0, 0.8, 1000000, 1.5, 5000000, 2.5, 10000000, 3.5],
+                    6, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
+                        0, 1.5, 500000, 2.5, 1000000, 4, 10000000, 6],
+                    12, ['interpolate', ['linear'], ['coalesce', ['get', 'pop_max'], 0],
+                        0, 2.5, 100000, 3.5, 1000000, 5, 10000000, 8],
                 ],
-                'circle-stroke-width': 0,
-                'circle-blur': 1,
-                'circle-pitch-alignment': 'map',
-            },
-            minzoom: 2,
-        });
-
-        // Main dot — crisp, solid, population-scaled
-        map.addLayer({
-            id: LAYERS.CITIES + '-core',
-            type: 'circle',
-            source: 'cities',
-            paint: {
-                'circle-radius': popRadius,
-                'circle-color': [
-                    'case',
-                    ['get', 'is_capital'], '#fbbf24',
-                    '#cbd5e1',
-                ],
+                'circle-color': ['case', ['get', 'is_capital'], '#fbbf24', '#cbd5e1'],
                 'circle-stroke-width': [
                     'interpolate', ['linear'], ['zoom'],
-                    2, 0.8,
-                    8, 1.5,
+                    0, 0.5, 6, 1, 12, 1.5,
                 ],
-                'circle-stroke-color': [
-                    'case',
-                    ['get', 'is_capital'], 'rgba(120, 80, 0, 0.6)',
-                    'rgba(15, 23, 42, 0.5)',
+                'circle-stroke-color': ['case',
+                    ['get', 'is_capital'], 'rgba(120, 80, 0, 0.5)',
+                    'rgba(15, 23, 42, 0.4)'
                 ],
                 'circle-opacity': [
-                    'interpolate', ['linear'], ['zoom'],
-                    2, 0.85,
-                    6, 1,
+                    'step', ['zoom'],
+                    // zoom < 3: only megacities (5M+)
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.8],
+                    3,
+                    // zoom 3-5: major cities (1M+)
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.8],
+                    5,
+                    // zoom 5-7: large cities (300K+)
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.8],
+                    7,
+                    // zoom 7-9: medium cities (100K+)
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.85],
+                    9,
+                    // zoom 9-11: small cities (30K+)
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.85],
+                    11,
+                    // zoom 11+: all
+                    0.9
                 ],
-                'circle-pitch-alignment': 'map',
             },
             minzoom: 2,
         });
 
-        // Labels
+        // City labels — same zoom/population thresholds
         map.addLayer({
             id: LAYERS.CITIES_LABEL,
             type: 'symbol',
@@ -485,11 +652,9 @@ const CMapsGlobe = (() => {
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
                 'text-size': [
                     'interpolate', ['linear'], ['zoom'],
-                    2, 9,
-                    6, 11,
-                    10, 13,
+                    3, 9, 6, 11, 10, 13,
                 ],
-                'text-offset': [0, 1.3],
+                'text-offset': [0, 1.0],
                 'text-anchor': 'top',
                 'text-allow-overlap': false,
                 'text-optional': true,
@@ -497,21 +662,26 @@ const CMapsGlobe = (() => {
                 'text-letter-spacing': 0.02,
             },
             paint: {
-                'text-color': [
-                    'case',
-                    ['get', 'is_capital'], '#fde68a',
-                    '#94a3b8',
-                ],
+                'text-color': ['case', ['get', 'is_capital'], '#fde68a', '#c8d6e5'],
                 'text-halo-color': 'rgba(5, 10, 20, 0.9)',
                 'text-halo-width': 1.8,
                 'text-halo-blur': 0.5,
                 'text-opacity': [
-                    'interpolate', ['linear'], ['zoom'],
-                    2, 0.7,
-                    5, 1,
+                    'step', ['zoom'],
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 5000000, 0.8],
+                    3,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 1000000, 0.8],
+                    5,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 300000, 0.8],
+                    7,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 100000, 0.9],
+                    9,
+                    ['step', ['coalesce', ['get', 'pop_max'], 0], 0, 30000, 0.9],
+                    11,
+                    1
                 ],
             },
-            minzoom: 2,
+            minzoom: 3,
         });
     }
 
@@ -700,8 +870,12 @@ const CMapsGlobe = (() => {
             if (!feature) return;
 
             const props = feature.properties;
-            const flagHtml = props.flag_url
-                ? `<img src="${props.flag_url}" alt="" class="country-popup-flag">`
+            const isoCode = (props.iso_code || '').toLowerCase();
+            const flagSrc = props.flag_url
+                || (isoCode && isoCode.length === 2 && isoCode !== '-99'
+                    ? `/static/data/flags/${isoCode}.png` : null);
+            const flagHtml = flagSrc
+                ? `<img src="${flagSrc}" alt="" class="country-popup-flag">`
                 : `<span>${props.flag_emoji || '🏳️'}</span>`;
             const popupContent = `
                 <div class="country-popup">
@@ -722,7 +896,7 @@ const CMapsGlobe = (() => {
             popup.setLngLat(e.lngLat).setHTML(popupContent).addTo(map);
         };
 
-        map.on('mousemove', LAYERS.COUNTRY_FILL, (e) => handleHover(e, 'countries'));
+        map.on('mousemove', LAYERS.COUNTRY_INTERACT, (e) => handleHover(e, 'countries'));
         map.on('mousemove', LAYERS.REGIONS_FILL, (e) => handleHover(e, 'regions'));
 
         const handleMouseLeave = () => {
@@ -731,7 +905,7 @@ const CMapsGlobe = (() => {
             popup.remove();
         };
 
-        map.on('mouseleave', LAYERS.COUNTRY_FILL, handleMouseLeave);
+        map.on('mouseleave', LAYERS.COUNTRY_INTERACT, handleMouseLeave);
         map.on('mouseleave', LAYERS.REGIONS_FILL, handleMouseLeave);
 
         // ── City / Capital hover popups ──
@@ -764,31 +938,41 @@ const CMapsGlobe = (() => {
             cityPopup.remove();
         };
 
-        // Cities layer hover/click
-        map.on('mousemove', LAYERS.CITIES + '-core', (e) => handleCityHover(e, 'city'));
-        map.on('mouseleave', LAYERS.CITIES + '-core', handleCityLeave);
-        map.on('click', LAYERS.CITIES + '-core', (e) => {
+        // Cities layer hover + click
+        let _cityClickConsumed = false;
+
+        map.on('mousemove', LAYERS.CITIES, (e) => handleCityHover(e, 'city'));
+        map.on('mouseleave', LAYERS.CITIES, handleCityLeave);
+        map.on('click', LAYERS.CITIES, (e) => {
             if (!e.features.length) return;
+            _cityClickConsumed = true;
             const coords = e.features[0].geometry.coordinates;
-            flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 7));
+            flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
+            cityPopup.remove();
         });
 
-        // Capitals layer hover/click
+        // Capitals layer hover + click
         map.on('mousemove', LAYERS.CAPITALS, (e) => handleCityHover(e, 'capital'));
         map.on('mouseleave', LAYERS.CAPITALS, handleCityLeave);
         map.on('click', LAYERS.CAPITALS, (e) => {
             if (!e.features.length) return;
+            _cityClickConsumed = true;
             const coords = e.features[0].geometry.coordinates;
-            flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 7));
+            flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
+            cityPopup.remove();
         });
 
         const handleClick = (e, sourceName) => {
+            if (_cityClickConsumed) { _cityClickConsumed = false; return; }
             if (e.features.length === 0) return;
             
-            // Handle Add Regions
-            if (typeof CMapsEditor !== 'undefined' && CMapsEditor.getCurrentTool() === 'add-regions' && sourceName === 'regions') {
-                 CMapsEditor.handleRegionClick(e.features[0]);
-                 return;
+            // In add-regions mode: only allow region clicks, suppress all country selection
+            if (typeof CMapsEditor !== 'undefined' && CMapsEditor.getCurrentTool() === 'add-regions') {
+                if (sourceName === 'regions') {
+                    CMapsEditor.handleRegionClick(e.features[0], e.originalEvent?.shiftKey);
+                }
+                // Suppress country selection — keep target country locked
+                return;
             }
 
             const countryId = sourceName === 'countries'
@@ -798,11 +982,15 @@ const CMapsGlobe = (() => {
             if (countryId) selectCountry(countryId);
         };
 
-        map.on('click', LAYERS.COUNTRY_FILL, (e) => handleClick(e, 'countries'));
+        map.on('click', LAYERS.COUNTRY_INTERACT, (e) => handleClick(e, 'countries'));
         map.on('click', LAYERS.REGIONS_FILL, (e) => handleClick(e, 'regions'));
 
         map.on('click', (e) => {
-            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_FILL, LAYERS.REGIONS_FILL] });
+            // Don't deselect when a city/capital click was consumed
+            if (_cityClickConsumed) { _cityClickConsumed = false; return; }
+            // Don't deselect the locked target in add-regions mode
+            if (typeof CMapsEditor !== 'undefined' && CMapsEditor.getCurrentTool() === 'add-regions') return;
+            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_INTERACT, LAYERS.REGIONS_FILL] });
             if (features.length === 0) {
                 deselectCountry();
             }
@@ -810,7 +998,7 @@ const CMapsGlobe = (() => {
 
         // Context menu (right-click) — dispatches custom event for context-menu module
         map.on('contextmenu', (e) => {
-            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_FILL, LAYERS.REGIONS_FILL] });
+            const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_INTERACT, LAYERS.REGIONS_FILL] });
             const detail = {
                 lngLat: e.lngLat,
                 point: e.point,
@@ -820,26 +1008,8 @@ const CMapsGlobe = (() => {
             window.dispatchEvent(new CustomEvent('cmaps:contextmenu', { detail }));
         });
 
-        map.on('zoomend', CMapsUtils.debounce(async () => {
-            const zoom = map.getZoom();
-            try {
-                const [cities, capitals] = await Promise.all([
-                    CMapsUtils.api(`/api/cities?zoom=${zoom}`).catch(() => null),
-                    CMapsUtils.api(`/api/capitals?zoom=${zoom}`).catch(() => null)
-                ]);
-
-                if (cities) {
-                    const cSource = map.getSource('cities');
-                    if (cSource) cSource.setData(cities);
-                }
-
-                if (capitals) {
-                    const capSource = map.getSource('capitals');
-                    if (capSource) capSource.setData(capitals);
-                }
-            } catch (err) {
-            }
-        }, 300));
+        // No zoomend data reload — all cities/capitals loaded at init
+        // Population-based opacity expressions handle progressive disclosure
     }
 
     function setCountryHoverState(countryId, isHovered) {
@@ -899,26 +1069,42 @@ const CMapsGlobe = (() => {
         document.getElementById('btn-merge').disabled = true;
     }
 
+    let _refreshPending = false;
     async function refreshCountries() {
+        if (_refreshPending) return; // Deduplicate rapid calls
+        _refreshPending = true;
         try {
             countriesData = await CMapsUtils.api('/api/countries/geojson', { bypassCache: true });
             const source = map.getSource('countries');
             if (source) {
                 source.setData(countriesData);
-                const colorExpr = buildColorExpression(countriesData);
-                map.setPaintProperty(LAYERS.COUNTRY_FILL, 'fill-color', colorExpr);
 
-                const regionColorExpr = buildRegionColorExpression();
-                map.setPaintProperty(LAYERS.REGIONS_FILL, 'fill-color', [
-                    'case',
-                    ['==', ['get', 'country_id'], null], '#2a2a3a',
-                    regionColorExpr,
-                ]);
+                // Batch all paint updates into one rAF
+                requestAnimationFrame(() => {
+                    const colorExpr = buildColorExpression(countriesData);
+                    map.setPaintProperty(LAYERS.COUNTRY_FILL, 'fill-color', colorExpr);
+
+                    const regionColorExpr = buildRegionColorExpression();
+                    map.setPaintProperty(LAYERS.REGIONS_FILL, 'fill-color', [
+                        'case',
+                        ['==', ['get', 'country_id'], null], '#2a2a3a',
+                        regionColorExpr,
+                    ]);
+
+                    if (map.getLayer(LAYERS.COUNTRY_FILL_LOWPOLY)) {
+                        const lpColorExpr = buildLowPolyColorExpression();
+                        map.setPaintProperty(LAYERS.COUNTRY_FILL_LOWPOLY, 'fill-color', lpColorExpr);
+                    }
+                });
             }
+
+            if (!_dom.countryCount) _cacheDOM();
             const count = countriesData.features?.length || 0;
-            document.getElementById('country-count').textContent = `${count} countries`;
+            _dom.countryCount.textContent = `${count} countries`;
         } catch (err) {
             console.error('Failed to refresh countries:', err);
+        } finally {
+            _refreshPending = false;
         }
     }
 
@@ -974,12 +1160,13 @@ const CMapsGlobe = (() => {
 
     function toggleLayer(layerKey, visible) {
         const layerMap = {
-            'countries': [LAYERS.COUNTRY_FILL, LAYERS.REGIONS_FILL],
+            'countries': [LAYERS.COUNTRY_FILL, LAYERS.COUNTRY_FILL_LOWPOLY, LAYERS.COUNTRY_BORDER_LOWPOLY, LAYERS.COUNTRY_INTERACT, LAYERS.REGIONS_FILL],
             'borders': [LAYERS.COUNTRY_BORDER, LAYERS.COUNTRY_OUTLINE],
-            'rivers': [LAYERS.RIVERS],
-            'lakes': [LAYERS.LAKES],
+            'rivers': [LAYERS.RIVERS, LAYERS.RIVERS + '-label'],
+            'lakes': [LAYERS.LAKES, LAYERS.LAKES + '-label'],
             'mountains': [LAYERS.MOUNTAINS, LAYERS.MOUNTAINS + '-label'],
-            'cities': [LAYERS.CITIES, LAYERS.CITIES + '-core', LAYERS.CITIES_LABEL],
+            'mountain-ranges': [LAYERS.MOUNTAIN_RANGES, LAYERS.MOUNTAIN_RANGES + '-outline', LAYERS.MOUNTAIN_RANGES + '-label'],
+            'cities': [LAYERS.CITIES, LAYERS.CITIES + '-glow', LAYERS.CITIES_LABEL],
             'regions': [LAYERS.REGIONS_BORDER],
             'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS_LABEL],
         };
@@ -992,14 +1179,21 @@ const CMapsGlobe = (() => {
         }
     }
 
+    // ── Cached DOM refs for hot-path updates ──
+    const _dom = {};
+    function _cacheDOM() {
+        _dom.coords = document.getElementById('coordinates');
+        _dom.zoom = document.getElementById('zoom-level');
+        _dom.countryCount = document.getElementById('country-count');
+    }
+
     function updateBottomBar() {
         if (!map) return;
+        if (!_dom.coords) _cacheDOM();
         const center = map.getCenter();
         const zoom = map.getZoom();
-        document.getElementById('coordinates').textContent =
-            `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
-        document.getElementById('zoom-level').textContent =
-            `Zoom: ${zoom.toFixed(1)}`;
+        _dom.coords.textContent = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
+        _dom.zoom.textContent = `Zoom: ${zoom.toFixed(1)}`;
 
         // Update scale bar if module exists
         if (typeof CMapsScaleBar !== 'undefined') {
@@ -1026,10 +1220,54 @@ const CMapsGlobe = (() => {
         }
     }
 
+    /**
+     * Instantly update region ownership in local data and re-render.
+     * No server round-trip — map updates in the same frame.
+     */
+    function updateRegionCountryId(regionIds, newCountryId) {
+        if (!regionsData?.features) return;
+
+        for (const rid of regionIds) {
+            const feature = regionsData.features.find(f =>
+                (f.id === rid) || (f.properties?.id === rid)
+            );
+            if (feature) {
+                const oldCId = feature.properties.country_id;
+                feature.properties.country_id = newCountryId;
+
+                // Update countryToRegions index
+                if (oldCId && countryToRegions[oldCId]) {
+                    countryToRegions[oldCId] = countryToRegions[oldCId].filter(id => id !== rid);
+                }
+                if (!countryToRegions[newCountryId]) countryToRegions[newCountryId] = [];
+                if (!countryToRegions[newCountryId].includes(rid)) {
+                    countryToRegions[newCountryId].push(rid);
+                }
+            }
+        }
+
+        // Push updated data to the source — triggers immediate re-render
+        const source = map.getSource('regions');
+        if (source) source.setData(regionsData);
+    }
+
     function getMap() { return map; }
     function getSelectedId() { return selectedCountryId; }
     function getCountriesData() { return countriesData; }
     function getRegionsData() { return regionsData; }
+
+    /**
+     * Find all sibling region parts sharing the same base name.
+     * E.g., "Galway" matches "Galway", "Galway (Inishmore)", "Galway (NW Isle)".
+     */
+    function getRegionSiblings(regionName) {
+        if (!regionsData) return [];
+        const baseName = regionName.replace(/\s*\([^)]*\)\s*$/, '').trim();
+        return regionsData.features.filter(f => {
+            const n = f.properties?.name || '';
+            return n === baseName || n.startsWith(baseName + ' (');
+        });
+    }
 
     return {
         init,
@@ -1037,6 +1275,8 @@ const CMapsGlobe = (() => {
         getSelectedId,
         getCountriesData,
         getRegionsData,
+        getRegionSiblings,
+        updateRegionCountryId,
         selectCountry,
         deselectCountry,
         refreshCountries,

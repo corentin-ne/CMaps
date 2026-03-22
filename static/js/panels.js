@@ -61,10 +61,11 @@ const CMapsPanel = (() => {
         const panel = document.getElementById('info-panel');
         panel.classList.remove('hidden');
 
-        // Flag display — use uploaded image if available, else emoji
+        // Flag display — use uploaded image if available, else try iso_code PNG, else emoji
         const flagEl = document.getElementById('country-flag');
-        if (p.flag_url) {
-            flagEl.innerHTML = `<img src="${p.flag_url}" alt="Flag" class="flag-image" />`;
+        const flagUrl = _resolveFlagUrl(p);
+        if (flagUrl) {
+            flagEl.innerHTML = `<img src="${flagUrl}" alt="Flag" class="flag-image" />`;
         } else {
             flagEl.textContent = p.flag_emoji || '🏳️';
         }
@@ -93,11 +94,45 @@ const CMapsPanel = (() => {
         // Flag emoji
         document.getElementById('flag-input').value = p.flag_emoji || '🏳️';
 
+        // Flag preview in the flag section
+        _updateFlagPreview(p);
+
         // Load cities/capitals for this country
         loadCountryCities(p.id);
 
         // Load region and city count stats
         loadCountryStats(p.id);
+    }
+
+    /**
+     * Resolve the best available flag URL for a country.
+     */
+    function _resolveFlagUrl(props) {
+        if (props.flag_url) return props.flag_url;
+        // Try to resolve from iso_code (2-letter) to the local PNG
+        const iso = (props.iso_code || '').toLowerCase();
+        if (iso && iso.length === 2 && iso !== '-99') {
+            return `/static/data/flags/${iso}.png`;
+        }
+        return null;
+    }
+
+    /**
+     * Update the flag preview thumbnail in the flag management section.
+     */
+    function _updateFlagPreview(props) {
+        const container = document.getElementById('flag-preview-container');
+        if (!container) return;
+
+        const flagUrl = _resolveFlagUrl(props);
+        if (flagUrl) {
+            container.innerHTML = `
+                <img src="${flagUrl}" alt="Flag preview" class="flag-preview-img"
+                     onerror="this.parentElement.innerHTML='<span class=\\'flag-preview-emoji\\'>${props.flag_emoji || '🏳️'}</span>'" />
+            `;
+        } else {
+            container.innerHTML = `<span class="flag-preview-emoji">${props.flag_emoji || '🏳️'}</span>`;
+        }
     }
 
     function hide() {
@@ -249,9 +284,15 @@ const CMapsPanel = (() => {
             if (!res.ok) throw new Error('Upload failed');
             const result = await res.json();
 
-            // Update flag display
+            // Update flag_url on current feature props
+            currentFeature.properties.flag_url = result.flag_url;
+
+            // Update header flag display
             const flagEl = document.getElementById('country-flag');
             flagEl.innerHTML = `<img src="${result.flag_url}" alt="Flag" class="flag-image" />`;
+
+            // Update flag preview in the management section
+            _updateFlagPreview(currentFeature.properties);
 
             await CMapsGlobe.refreshCountries();
             CMapsUtils.toast('Flag uploaded!', 'success');

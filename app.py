@@ -3,6 +3,7 @@ CMaps — Interactive Globe World Map Editor
 Main FastAPI application entry point.
 """
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,11 +14,32 @@ from database import init_db
 from routers import countries, features, cities, projects, stats, flags, regions, capitals
 
 
+async def _fill_missing_flags_bg():
+    """Background task: try to download flags for countries that are still missing them."""
+    await asyncio.sleep(5)  # Let the server finish starting up first
+    try:
+        from database import SessionLocal
+        from setup_data import fill_missing_flags
+        db = SessionLocal()
+        try:
+            fill_missing_flags(db)
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"  ⚠ Background flag-fill error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup/shutdown lifecycle."""
     # Initialize database
     init_db()
+
+    DATA_DIR = os.path.join("static", "data")
+    countries_50m = os.path.join(DATA_DIR, "ne_50m_admin_0_countries.geojson")
+    countries_110m = os.path.join(DATA_DIR, "ne_110m_admin_0_countries.geojson")
+    # Prefer 50m (more countries, includes microstates); fallback to 110m
+    countries_path = countries_50m if os.path.exists(countries_50m) else countries_110m
 
     # Check if data is setup
     from setup_data import is_data_ready, setup_data
@@ -30,18 +52,18 @@ async def lifespan(app: FastAPI):
         from services.data_loader import load_countries, load_regions, load_capitals
         db = SessionLocal()
         try:
-            load_countries(db, os.path.join(
-                "static", "data", "ne_110m_admin_0_countries.geojson"))
-            regions_path = os.path.join(
-                "static", "data", "ne_10m_admin_1_states_provinces.geojson")
+            load_countries(db, countries_path)
+            regions_path = os.path.join(DATA_DIR, "ne_10m_admin_1_states_provinces.geojson")
             if os.path.exists(regions_path):
                 load_regions(db, regions_path)
-            cities_path = os.path.join(
-                "static", "data", "ne_10m_populated_places_simple.geojson")
+            cities_path = os.path.join(DATA_DIR, "ne_10m_populated_places_simple.geojson")
             if os.path.exists(cities_path):
                 load_capitals(db, cities_path)
         finally:
             db.close()
+
+    # Background: fill flags for any countries that are still missing them
+    asyncio.create_task(_fill_missing_flags_bg())
 
     yield
 

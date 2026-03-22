@@ -7,10 +7,11 @@ from sqlalchemy import func
 from database import Country, Region
 
 
-def recalculate_country(db: Session, country_id: int) -> dict:
+def recalculate_country(db: Session, country_id: int, skip_geometry: bool = False) -> dict:
     """
     Recalculate a country's aggregated stats from its child regions.
     Returns a dict of the updated values.
+    When skip_geometry=True, skips expensive Shapely geometry merge (for rapid edits).
     """
     country = db.query(Country).filter(Country.id == country_id).first()
     if not country:
@@ -34,15 +35,16 @@ def recalculate_country(db: Session, country_id: int) -> dict:
         if total_area > 0:
             country.area_km2 = total_area
 
-        # Update geometry by merging region geometries
-        from services.geo_utils import merge_polygons
-        import json
-        regions = db.query(Region).filter(Region.country_id == country_id).all()
-        geoms = [json.loads(r.geometry) if isinstance(r.geometry, str) else r.geometry for r in regions]
-        if geoms:
-            merged_geom = merge_polygons(geoms)
-            if merged_geom:
-                country.geometry = json.dumps(merged_geom)
+        if not skip_geometry:
+            # Update geometry by merging region geometries (expensive!)
+            from services.geo_utils import merge_polygons
+            import json
+            regions = db.query(Region).filter(Region.country_id == country_id).all()
+            geoms = [json.loads(r.geometry) if isinstance(r.geometry, str) else r.geometry for r in regions]
+            if geoms:
+                merged_geom = merge_polygons(geoms)
+                if merged_geom:
+                    country.geometry = json.dumps(merged_geom)
 
     db.commit()
     db.refresh(country)
@@ -63,9 +65,10 @@ def propagate_region_change(db: Session, region_id: int):
         recalculate_country(db, region.country_id)
 
 
-def reassign_region(db: Session, region_id: int, new_country_id: int, old_country_id: int = None):
+def reassign_region(db: Session, region_id: int, new_country_id: int, old_country_id: int = None, defer_geometry: bool = False):
     """
     Move a region from one country to another and recalculate both.
+    When defer_geometry=True, skips expensive geometry merge for rapid batch operations.
     """
     region = db.query(Region).filter(Region.id == region_id).first()
     if not region:
@@ -77,5 +80,5 @@ def reassign_region(db: Session, region_id: int, new_country_id: int, old_countr
 
     # Recalculate both old and new parent
     if old_id:
-        recalculate_country(db, old_id)
-    recalculate_country(db, new_country_id)
+        recalculate_country(db, old_id, skip_geometry=defer_geometry)
+    recalculate_country(db, new_country_id, skip_geometry=defer_geometry)

@@ -50,6 +50,20 @@ const CMapsContextMenu = (() => {
             item.classList.toggle('disabled', !currentFeature);
         });
 
+        // Show/hide add-regions mode items
+        const isAddMode = typeof CMapsEditor !== 'undefined' && CMapsEditor.getCurrentTool() === 'add-regions';
+        menuEl.querySelectorAll('.ctx-add-mode').forEach(item => {
+            item.style.display = isAddMode && currentFeature ? '' : 'none';
+        });
+
+        // Update "Add All Parts" label with region base name
+        if (isAddMode && currentFeature) {
+            const regionName = currentFeature.properties?.name || '';
+            const baseName = regionName.replace(/\s*\([^)]*\)\s*$/, '').trim();
+            const addAllLabel = menuEl.querySelector('[data-action="add-all-parts"] span');
+            if (addAllLabel) addAllLabel.textContent = `Add All Parts of ${baseName}`;
+        }
+
         // Position the menu at cursor
         const x = detail.originalEvent?.clientX || detail.point?.x || 0;
         const y = detail.originalEvent?.clientY || detail.point?.y || 0;
@@ -150,6 +164,16 @@ const CMapsContextMenu = (() => {
                         CMapsUtils.toast(`Copied: ${coords}`, 'info');
                     });
                 }
+                break;
+            }
+            case 'add-part': {
+                if (!currentFeature) return;
+                CMapsEditor.handleRegionClick(currentFeature, false);
+                break;
+            }
+            case 'add-all-parts': {
+                if (!currentFeature) return;
+                CMapsEditor.handleRegionClick(currentFeature, true);
                 break;
             }
         }

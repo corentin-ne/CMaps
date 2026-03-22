@@ -72,6 +72,30 @@ def search_regions(q: str = Query("", min_length=1),
     }
 
 
+@router.get("/{region_id}/siblings")
+def get_region_siblings(region_id: int, db: Session = Depends(get_db)):
+    """Get all sibling parts of a multi-part region (same base name)."""
+    import re
+    from fastapi import HTTPException
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # Extract base name (strip parenthetical suffix like " (Inishmore)" or " (3)")
+    base_name = re.sub(r'\s*\([^)]*\)\s*$', '', region.name).strip()
+
+    siblings = (db.query(Region)
+                .filter(Region.name.like(f"{base_name}%"))
+                .filter(Region.iso_country == region.iso_country)
+                .all())
+
+    return {
+        "base_name": base_name,
+        "parts": [r.to_geojson_feature(include_geometry=False) for r in siblings]
+    }
+
+
 @router.get("/{region_id}")
 def get_region(region_id: int, db: Session = Depends(get_db)):
     """Get a single region with full geometry."""
@@ -120,15 +144,30 @@ def bulk_assign_regions(data: dict, db: Session = Depends(get_db)):
 
     region_ids = data.get('region_ids', [])
     target_country_id = data.get('country_id')
+    defer_geometry = data.get('defer_geometry', False)
 
     if not region_ids or not target_country_id:
         raise HTTPException(status_code=400, detail="Provide region_ids and country_id")
 
     results = []
     for rid in region_ids:
-        reassign_region(db, rid, target_country_id)
+        reassign_region(db, rid, target_country_id, defer_geometry=defer_geometry)
         region = db.query(Region).filter(Region.id == rid).first()
         if region:
-            results.append(region.to_geojson_feature())
+            results.append(region.to_geojson_feature(include_geometry=False))
 
     return {"assigned": len(results), "regions": results}
+
+
+@router.post("/finalize-geometry")
+def finalize_geometry(data: dict, db: Session = Depends(get_db)):
+    """Recalculate geometry for a country after batch region operations."""
+    from services.aggregation import recalculate_country
+
+    country_id = data.get('country_id')
+    if not country_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Provide country_id")
+
+    result = recalculate_country(db, country_id, skip_geometry=False)
+    return {"status": "ok", **result}

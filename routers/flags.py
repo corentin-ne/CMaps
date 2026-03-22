@@ -4,7 +4,7 @@ CMaps Flags Router — Custom flag image upload and management.
 import os
 import uuid
 import shutil
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from database import get_db, Country
@@ -12,6 +12,21 @@ from database import get_db, Country
 router = APIRouter(prefix="/api/flags", tags=["flags"])
 
 FLAGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "data", "flags")
+
+
+@router.post("/fill-missing")
+def fill_missing_flags_endpoint(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger a background download of flags for countries that are still missing them."""
+    def _run(db_session: Session):
+        try:
+            from setup_data import fill_missing_flags
+            filled = fill_missing_flags(db_session)
+            print(f"  fill-missing-flags: {filled} updated")
+        except Exception as e:
+            print(f"  fill-missing-flags error: {e}")
+
+    background_tasks.add_task(_run, db)
+    return {"status": "started", "message": "Flag fill running in background"}
 
 
 @router.post("/{country_id}")
