@@ -65,11 +65,14 @@ const CMapsSearch = (() => {
             if (countries && countries.length > 0) {
                 for (const country of countries.slice(0, 5)) {
                     const props = country.properties || country;
+                    const flagIcon = props.flag_url
+                        ? `<img src="${props.flag_url}" alt="" class="country-popup-flag" style="width:18px;height:12px">`
+                        : (props.flag_emoji || '🏳️');
                     items.push({
                         type: 'country',
                         name: props.name,
                         meta: `${props.continent || ''} · ${CMapsUtils.formatPopShort(props.population)}`,
-                        icon: props.flag_emoji || '🏳️',
+                        icon: flagIcon,
                         id: props.id,
                     });
                 }

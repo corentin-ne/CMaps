@@ -34,9 +34,9 @@ def get_lakes():
 
 @router.get("/mountains")
 def get_mountains():
-    """Get mountain/elevation points GeoJSON."""
+    """Get mountain/elevation points GeoJSON with name and elevation labels."""
     data = _load_geojson("ne_10m_geography_regions_elevation_points.geojson")
-    # Filter to only include significant peaks
+    # Filter to significant peaks and normalize properties for the map layer
     if data.get("features"):
         filtered = []
         for f in data["features"]:
@@ -44,6 +44,18 @@ def get_mountains():
             elevation = props.get("elevation", 0) or 0
             # Include peaks above 500m
             if elevation >= 500:
-                filtered.append(f)
+                name = (props.get("name", "") or
+                        props.get("NAME", "") or
+                        props.get("name_en", "") or "")
+                filtered.append({
+                    "type": "Feature",
+                    "geometry": f.get("geometry"),
+                    "properties": {
+                        "name": name,
+                        "elevation": int(elevation),
+                        "description": props.get("description", ""),
+                        "region": props.get("region", ""),
+                    }
+                })
         data["features"] = filtered
     return data

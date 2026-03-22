@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
-from routers import countries, features, cities, projects, regions, capitals
+from routers import countries, features, cities, projects, stats, flags, regions, capitals
 
 
 @asynccontextmanager
@@ -67,6 +67,8 @@ app.include_router(countries.router)
 app.include_router(features.router)
 app.include_router(cities.router)
 app.include_router(projects.router)
+app.include_router(stats.router)
+app.include_router(flags.router)
 app.include_router(regions.router)
 app.include_router(capitals.router)
 

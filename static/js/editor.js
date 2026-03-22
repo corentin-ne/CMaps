@@ -1,13 +1,11 @@
 /**
  * CMaps — Editor Module
- * Integrates Terra Draw for drawing and editing country borders.
+ * Click-to-transfer region system for reassigning regions between countries.
  */
 const CMapsEditor = (() => {
-    let draw = null;
     let currentTool = 'select';
-    let pendingGeometry = null;
-    let splitSourceFeature = null;
     let mergeSelection = []; // Array of selected country features for merge
+    let regionsReassigned = 0; // Counter for mode banner feedback
 
     function init() {
         // Tool button clicks
@@ -16,304 +14,46 @@ const CMapsEditor = (() => {
         });
 
         // Toolbar action buttons
-        document.getElementById('btn-merge').addEventListener('click', openMergeDialog);
-        document.getElementById('btn-split').addEventListener('click', () => {
-            const feature = CMapsPanel.getCurrentFeature();
-            if (feature) startSplitMode(feature);
-        });
-        document.getElementById('btn-delete').addEventListener('click', () => {
-            const feature = CMapsPanel.getCurrentFeature();
-            if (feature) {
-                const id = feature.properties?.id || feature.id;
-                const name = feature.properties?.name || 'this country';
-                if (confirm(`Delete "${name}"?`)) {
-                    deleteCountry(id, feature);
-                }
-            }
+        const btnMerge = document.getElementById('btn-merge');
+        if (btnMerge) btnMerge.addEventListener('click', openMergeDialog);
+        
+        const btnSplit = document.getElementById('btn-split'); // from toolbar
+        if (btnSplit) btnSplit.addEventListener('click', () => {
+             CMapsUtils.toast('Splitting is currently disabled. Assign regions individually instead.', 'info');
         });
 
-        // New country dialog
-        document.getElementById('btn-confirm-create').addEventListener('click', confirmCreateCountry);
-
-        // Split dialog
-        document.getElementById('btn-confirm-split').addEventListener('click', confirmSplit);
-
-        // Merge dialog
-        document.getElementById('btn-confirm-merge').addEventListener('click', confirmMerge);
-
-        // Init Terra Draw after map loads
-        initTerraDraw();
-    }
-
-    /**
-     * Initialize Terra Draw with the MapLibre adapter.
-     */
-    function initTerraDraw() {
-        const map = CMapsGlobe.getMap();
-        if (!map) {
-            setTimeout(initTerraDraw, 500);
-            return;
-        }
-
-        try {
-            // Check if Terra Draw classes are available
-            if (typeof TerraDraw === 'undefined' && typeof window.TerraDraw === 'undefined') {
-                console.warn('Terra Draw not loaded, using fallback drawing');
-                initFallbackDrawing();
-                return;
-            }
-
-            const TD = window.TerraDraw || TerraDraw;
-            const TDAdapter = window.TerraDrawMapLibreGLAdapter || TerraDrawMapLibreGLAdapter;
-
-            draw = new TD.TerraDraw({
-                adapter: new TDAdapter.TerraDrawMapLibreGLAdapter({ map, lib: maplibregl }),
-                modes: [
-                    new TD.TerraDrawPolygonMode({
-                        styling: {
-                            polygonFillColor: '#6ea8fe',
-                            polygonFillOpacity: 0.3,
-                            polygonOutlineColor: '#6ea8fe',
-                            polygonOutlineWidth: 2,
-                        },
-                    }),
-                    new TD.TerraDrawLineStringMode({
-                        styling: {
-                            lineStringColor: '#f87171',
-                            lineStringWidth: 3,
-                        },
-                    }),
-                    new TD.TerraDrawFreehandMode({
-                        styling: {
-                            polygonFillColor: '#6ea8fe',
-                            polygonFillOpacity: 0.3,
-                            polygonOutlineColor: '#6ea8fe',
-                            polygonOutlineWidth: 2,
-                        },
-                    }),
-                    new TD.TerraDrawSelectMode({
-                        flags: {
-                            polygon: {
-                                feature: {
-                                    draggable: true,
-                                    rotateable: true,
-                                    scaleable: true,
-                                    coordinates: {
-                                        midpoints: true,
-                                        draggable: true,
-                                        deletable: true,
-                                    },
-                                },
-                            },
-                            linestring: {
-                                feature: {
-                                    draggable: true,
-                                    coordinates: {
-                                        midpoints: true,
-                                        draggable: true,
-                                        deletable: true,
-                                    },
-                                },
-                            },
-                        },
-                    }),
-                    new TD.TerraDrawRenderMode({ modeName: 'default' }),
-                ],
-            });
-
-            draw.start();
-            draw.setMode('default');
-
-            // Listen for drawing completion
-            draw.on('finish', (id) => onDrawFinish(id));
-
-        } catch (error) {
-            console.warn('Terra Draw init failed, using fallback:', error);
-            initFallbackDrawing();
-        }
-    }
-
-    /**
-     * Fallback drawing using GeoJSON and map click events.
-     */
-    function initFallbackDrawing() {
-        const map = CMapsGlobe.getMap();
-
-        // Add a source for drawn features
-        if (!map.getSource('draw-source')) {
-            map.addSource('draw-source', {
-                type: 'geojson',
-                data: { type: 'FeatureCollection', features: [] }
-            });
-
-            map.addLayer({
-                id: 'draw-polygon-fill',
-                type: 'fill',
-                source: 'draw-source',
-                filter: ['==', '$type', 'Polygon'],
-                paint: {
-                    'fill-color': '#6ea8fe',
-                    'fill-opacity': 0.3,
-                }
-            });
-
-            map.addLayer({
-                id: 'draw-polygon-line',
-                type: 'line',
-                source: 'draw-source',
-                filter: ['==', '$type', 'Polygon'],
-                paint: {
-                    'line-color': '#6ea8fe',
-                    'line-width': 2,
-                }
-            });
-
-            map.addLayer({
-                id: 'draw-line',
-                type: 'line',
-                source: 'draw-source',
-                filter: ['==', '$type', 'LineString'],
-                paint: {
-                    'line-color': '#f87171',
-                    'line-width': 3,
-                    'line-dasharray': [3, 2],
-                }
-            });
-
-            map.addLayer({
-                id: 'draw-points',
-                type: 'circle',
-                source: 'draw-source',
-                filter: ['==', '$type', 'Point'],
-                paint: {
-                    'circle-radius': 5,
-                    'circle-color': '#6ea8fe',
-                    'circle-stroke-width': 2,
-                    'circle-stroke-color': '#fff',
-                }
-            });
-        }
-
-        // Store drawing state
-        window._drawState = {
-            active: false,
-            mode: null, // 'polygon' or 'line'
-            points: [],
-        };
-
-        map.on('click', (e) => {
-            const state = window._drawState;
-            if (!state.active) return;
-
-            state.points.push([e.lngLat.lng, e.lngLat.lat]);
-            updateDrawPreview();
+        const btnSplitPanel = document.getElementById('btn-split-panel'); // from panel action
+        if (btnSplitPanel) btnSplitPanel.addEventListener('click', () => {
+             CMapsUtils.toast('Splitting is currently disabled. Assign regions individually instead.', 'info');
         });
-
-        map.on('dblclick', (e) => {
-            const state = window._drawState;
-            if (!state.active || state.points.length < 2) return;
-
-            e.preventDefault();
-            finishFallbackDraw();
-        });
-
-        map.on('contextmenu', (e) => {
-            const state = window._drawState;
-            if (!state.active) return;
-            e.preventDefault();
-            if (state.points.length >= 3) {
-                finishFallbackDraw();
-            } else {
-                cancelDraw();
-            }
-        });
-    }
-
-    function updateDrawPreview() {
-        const state = window._drawState;
-        const map = CMapsGlobe.getMap();
-        const source = map.getSource('draw-source');
-        if (!source) return;
-
-        const features = [];
-        if (state.points.length >= 1) {
-            // Show points
-            for (const pt of state.points) {
-                features.push({
-                    type: 'Feature',
-                    geometry: { type: 'Point', coordinates: pt },
-                    properties: {},
-                });
-            }
-
-            if (state.points.length >= 2) {
-                if (state.mode === 'line') {
-                    features.push({
-                        type: 'Feature',
-                        geometry: { type: 'LineString', coordinates: state.points },
-                        properties: {},
-                    });
-                } else if (state.mode === 'polygon' && state.points.length >= 3) {
-                    const ring = [...state.points, state.points[0]];
-                    features.push({
-                        type: 'Feature',
-                        geometry: { type: 'Polygon', coordinates: [ring] },
-                        properties: {},
-                    });
-                }
-            }
+        
+        const btnDeleteToolbar = document.getElementById('btn-delete'); // toolbar action button
+        if (btnDeleteToolbar) {
+             btnDeleteToolbar.addEventListener('click', confirmDeleteCountry);
         }
 
-        source.setData({ type: 'FeatureCollection', features });
-    }
-
-    function finishFallbackDraw() {
-        const state = window._drawState;
-        if (!state.active) return;
-
-        let geometry;
-        if (state.mode === 'polygon' && state.points.length >= 3) {
-            const ring = [...state.points, state.points[0]];
-            geometry = { type: 'Polygon', coordinates: [ring] };
-        } else if (state.mode === 'line' && state.points.length >= 2) {
-            geometry = { type: 'LineString', coordinates: state.points };
+        const btnDeletePanel = document.getElementById('btn-delete-panel'); // panel action button
+        if (btnDeletePanel) {
+             btnDeletePanel.addEventListener('click', confirmDeleteCountry);
         }
 
-        if (geometry) {
-            pendingGeometry = geometry;
-            if (state.mode === 'polygon') {
-                // Open new country dialog
+        const btnNewCountry = document.getElementById('btn-new-country');
+        if (btnNewCountry) {
+            btnNewCountry.addEventListener('click', () => {
                 document.getElementById('new-country-color').value = CMapsUtils.randomColor();
                 CMapsPanel.openModal('modal-new-country');
-            } else if (state.mode === 'line' && splitSourceFeature) {
-                // Open split dialog
-                const name = splitSourceFeature.properties?.name || 'Country';
-                document.getElementById('split-name-1').value = `${name} (West)`;
-                document.getElementById('split-name-2').value = `${name} (East)`;
-                CMapsPanel.openModal('modal-split-country');
-            }
+            });
         }
 
-        // Reset drawing state
-        state.active = false;
-        state.points = [];
-        CMapsUtils.setStatus('Ready');
-        setTool('select');
-    }
+        const btnConfirmCreate = document.getElementById('btn-confirm-create');
+        if (btnConfirmCreate) btnConfirmCreate.addEventListener('click', confirmCreateCountry);
 
-    function cancelDraw() {
-        const state = window._drawState;
-        state.active = false;
-        state.points = [];
-        const map = CMapsGlobe.getMap();
-        const source = map.getSource('draw-source');
-        if (source) source.setData({ type: 'FeatureCollection', features: [] });
-        CMapsUtils.setStatus('Drawing cancelled');
-        setTool('select');
+        const btnConfirmMerge = document.getElementById('btn-confirm-merge');
+        if (btnConfirmMerge) btnConfirmMerge.addEventListener('click', confirmMerge);
     }
 
     /**
-     * Set the active drawing tool.
+     * Set the active editing/navigation tool.
      */
     function setTool(tool) {
         currentTool = tool;
@@ -323,109 +63,103 @@ const CMapsEditor = (() => {
             btn.classList.toggle('active', btn.dataset.tool === tool);
         });
 
-        const map = CMapsGlobe.getMap();
+        const banner = document.getElementById('mode-banner');
 
-        // Handle draw modes
-        if (draw) {
-            // Terra Draw is available
-            switch (tool) {
-                case 'select':
-                    draw.setMode('default');
-                    break;
-                case 'polygon':
-                    draw.setMode('polygon');
-                    CMapsUtils.setStatus('Click to place points. Double-click to finish polygon.');
-                    break;
-                case 'line':
-                    draw.setMode('linestring');
-                    CMapsUtils.setStatus('Click to place points. Double-click to finish line.');
-                    break;
-                case 'freehand':
-                    draw.setMode('freehand');
-                    CMapsUtils.setStatus('Click and drag to draw freehand.');
-                    break;
-                case 'edit':
-                    draw.setMode('select');
-                    CMapsUtils.setStatus('Click a drawn feature to edit it.');
-                    break;
-            }
-        } else if (window._drawState) {
-            // Fallback drawing
-            const state = window._drawState;
-            switch (tool) {
-                case 'select':
-                    state.active = false;
-                    state.points = [];
-                    const source = map.getSource('draw-source');
-                    if (source) source.setData({ type: 'FeatureCollection', features: [] });
-                    CMapsUtils.setStatus('Ready');
-                    break;
-                case 'polygon':
-                    state.active = true;
-                    state.mode = 'polygon';
-                    state.points = [];
-                    CMapsUtils.setStatus('Click to place points. Double-click or right-click to finish polygon.');
-                    break;
-                case 'line':
-                    state.active = true;
-                    state.mode = 'line';
-                    state.points = [];
-                    CMapsUtils.setStatus('Click to place points. Double-click or right-click to finish line.');
-                    break;
-                case 'freehand':
-                    state.active = true;
-                    state.mode = 'polygon';
-                    state.points = [];
-                    CMapsUtils.setStatus('Click to place points. Double-click to finish.');
-                    break;
+        if (tool === 'select') {
+            CMapsUtils.setStatus('Ready');
+            regionsReassigned = 0;
+            if (banner) banner.classList.add('hidden');
+        } else if (tool === 'add-regions') {
+            const feature = CMapsPanel.getCurrentFeature();
+            if (feature) {
+                const name = feature.properties?.name || 'the selected country';
+                CMapsUtils.setStatus(`Add Regions mode: Click regions to reassign them to ${name}. Press Escape to exit.`);
+                regionsReassigned = 0;
+                if (banner) {
+                    banner.classList.remove('hidden');
+                    const bannerName = banner.querySelector('.mode-banner-country');
+                    const bannerCount = banner.querySelector('.mode-banner-count');
+                    if (bannerName) bannerName.textContent = name;
+                    if (bannerCount) bannerCount.textContent = '0 regions reassigned';
+                }
+            } else {
+                CMapsUtils.toast('Select a country first, then enter Add Regions mode.', 'info');
+                setTool('select');
             }
         }
     }
 
     /**
-     * Called when Terra Draw finishes a shape.
+     * Handle clicking a region on the globe while tools are active.
      */
-    function onDrawFinish(id) {
-        if (!draw) return;
+    async function handleRegionClick(regionFeature) {
+        if (currentTool === 'add-regions') {
+            const countryFeature = CMapsPanel.getCurrentFeature();
+            if (!countryFeature) {
+                CMapsUtils.toast('Select a parent country to reassign regions to', 'info');
+                setTool('select');
+                return;
+            }
 
-        const snapshot = draw.getSnapshot();
-        const feature = snapshot.find(f => f.id === id);
-        if (!feature) return;
+            const targetCountryId = countryFeature.properties?.id || countryFeature.id;
+            const regionId = regionFeature.properties?.id || regionFeature.id;
+            const regionName = regionFeature.properties?.name || 'Region';
 
-        const geometry = feature.geometry;
-        pendingGeometry = geometry;
+            if (regionFeature.properties.country_id === targetCountryId) {
+                // Already belongs to this country
+                return;
+            }
 
-        if (geometry.type === 'Polygon') {
-            // Open create country dialog
-            document.getElementById('new-country-color').value = CMapsUtils.randomColor();
-            CMapsPanel.openModal('modal-new-country');
-        } else if (geometry.type === 'LineString' && splitSourceFeature) {
-            // Open split dialog
-            const name = splitSourceFeature.properties?.name || 'Country';
-            document.getElementById('split-name-1').value = `${name} (West)`;
-            document.getElementById('split-name-2').value = `${name} (East)`;
-            CMapsPanel.openModal('modal-split-country');
+            try {
+                CMapsUtils.setStatus(`Reassigning ${regionName}...`);
+                await CMapsUtils.api('/api/regions/bulk-assign', {
+                    method: 'POST',
+                    body: {
+                        region_ids: [regionId],
+                        country_id: targetCountryId
+                    }
+                });
+
+                // Refresh map data
+                await Promise.all([
+                    CMapsGlobe.refreshCountries(),
+                    CMapsGlobe.refreshRegions(),
+                ]);
+
+                // Update counter
+                regionsReassigned++;
+                const banner = document.getElementById('mode-banner');
+                if (banner) {
+                    const bannerCount = banner.querySelector('.mode-banner-count');
+                    if (bannerCount) bannerCount.textContent = `${regionsReassigned} region${regionsReassigned !== 1 ? 's' : ''} reassigned`;
+                }
+
+                CMapsUtils.toast(`${regionName} → ${countryFeature.properties?.name}`, 'success', 1500);
+                CMapsUtils.setStatus(`Add Regions mode: ${regionsReassigned} reassigned. Keep clicking or press Escape.`);
+                
+            } catch (err) {
+                CMapsUtils.toast(`Failed to reassign: ${err.message}`, 'error');
+                CMapsUtils.setStatus('Ready');
+            }
         }
-
-        // Clear drawn features
-        try { draw.removeFeatures([id]); } catch (e) { /* ignore */ }
     }
 
     /**
      * Confirm creating a new country from the dialog.
      */
     async function confirmCreateCountry() {
-        if (!pendingGeometry) return;
-
         const name = document.getElementById('new-country-name').value.trim();
         if (!name) {
             CMapsUtils.toast('Please enter a country name', 'error');
             return;
         }
 
+        // Create a dummy polygon to pass geo validation. It will be replaced when regions are assigned.
+        const dummyGeometry = {"type": "Polygon", "coordinates": [[[0, 0], [0, 0.0001], [0.0001, 0], [0, 0]]]};
+
         const data = {
             name: name,
-            geometry: pendingGeometry,
+            geometry: dummyGeometry,
             population: parseInt(document.getElementById('new-country-population').value) || 0,
             capital: document.getElementById('new-country-capital').value || null,
             flag_emoji: document.getElementById('new-country-flag').value || '🏳️',
@@ -443,11 +177,6 @@ const CMapsEditor = (() => {
 
             await CMapsGlobe.refreshCountries();
             CMapsPanel.closeModal();
-            pendingGeometry = null;
-
-            // Clear fallback drawing
-            const source = CMapsGlobe.getMap().getSource('draw-source');
-            if (source) source.setData({ type: 'FeatureCollection', features: [] });
 
             // Clear form
             document.getElementById('new-country-name').value = '';
@@ -456,8 +185,10 @@ const CMapsEditor = (() => {
             document.getElementById('new-country-flag').value = '';
 
             CMapsUtils.toast(`"${name}" created!`, 'success');
-            CMapsUtils.setStatus('Ready');
-            setTool('select');
+            
+            // Automatically select it and turn on 'add-regions'
+            CMapsGlobe.selectCountry(result.properties.id);
+            setTool('add-regions');
 
         } catch (err) {
             CMapsUtils.toast(`Failed to create: ${err.message}`, 'error');
@@ -465,55 +196,11 @@ const CMapsEditor = (() => {
     }
 
     // ═══ Split ═══
-
     function startSplitMode(feature) {
-        splitSourceFeature = feature;
-        setTool('line');
-        CMapsUtils.toast('Draw a line across the country to split it', 'info');
-    }
-
-    async function confirmSplit() {
-        if (!splitSourceFeature || !pendingGeometry) return;
-
-        const id = splitSourceFeature.properties?.id || splitSourceFeature.id;
-        const names = [
-            document.getElementById('split-name-1').value.trim(),
-            document.getElementById('split-name-2').value.trim(),
-        ].filter(n => n);
-
-        try {
-            CMapsUtils.setStatus('Splitting country...');
-            const result = await CMapsUtils.api(`/api/countries/${id}/split`, {
-                method: 'POST',
-                body: {
-                    line: pendingGeometry,
-                    names: names,
-                },
-            });
-
-            CMapsHistory.push('split', { before: splitSourceFeature, after: result.parts });
-
-            CMapsGlobe.deselectCountry();
-            await CMapsGlobe.refreshCountries();
-            CMapsPanel.closeModal();
-            pendingGeometry = null;
-            splitSourceFeature = null;
-
-            // Clear fallback drawing
-            const source = CMapsGlobe.getMap().getSource('draw-source');
-            if (source) source.setData({ type: 'FeatureCollection', features: [] });
-
-            CMapsUtils.toast('Country split successfully!', 'success');
-            CMapsUtils.setStatus('Ready');
-            setTool('select');
-
-        } catch (err) {
-            CMapsUtils.toast(`Split failed: ${err.message}`, 'error');
-        }
+         CMapsUtils.toast('Splitting is currently disabled. Detach regions using the context menu instead.', 'info');
     }
 
     // ═══ Merge ═══
-
     function toggleMergeSelect(countryId, feature) {
         const idx = mergeSelection.findIndex(f => (f.properties?.id || f.id) === countryId);
         if (idx >= 0) {
@@ -523,16 +210,19 @@ const CMapsEditor = (() => {
         }
 
         // Enable merge button when 2+ selected
-        document.getElementById('btn-merge').disabled = mergeSelection.length < 2;
+        const btnMerge = document.getElementById('btn-merge');
+        if (btnMerge) btnMerge.disabled = mergeSelection.length < 2;
 
         if (mergeSelection.length > 0) {
-            CMapsUtils.setStatus(`${mergeSelection.length} countries selected for merge`);
+            CMapsUtils.setStatus(`${mergeSelection.length} countries selected for merge. Click 'Merge Countries' in the toolbar to proceed.`);
+        } else {
+            CMapsUtils.setStatus('Ready');
         }
     }
 
     function openMergeDialog() {
         if (mergeSelection.length < 2) {
-            CMapsUtils.toast('Select at least 2 countries to merge (Ctrl+Click)', 'info');
+            CMapsUtils.toast('Select at least 2 countries to merge (Shift+Click or Ctrl+Click map)', 'info');
             return;
         }
 
@@ -580,7 +270,8 @@ const CMapsEditor = (() => {
             CMapsGlobe.deselectCountry();
             await CMapsGlobe.refreshCountries();
             CMapsPanel.closeModal();
-            document.getElementById('btn-merge').disabled = true;
+            const btnMerge = document.getElementById('btn-merge');
+            if (btnMerge) btnMerge.disabled = true;
 
             CMapsUtils.toast(`Countries merged into "${newName}"!`, 'success');
             CMapsUtils.setStatus('Ready');
@@ -591,21 +282,41 @@ const CMapsEditor = (() => {
     }
 
     // ═══ Edit Borders ═══
-
     function startEditMode(feature) {
-        CMapsUtils.toast('Border editing: Use the drawing tools to modify borders', 'info');
-        setTool('edit');
+        setTool('add-regions');
+    }
+
+    // ═══ Exit Mode ═══
+    function exitMode() {
+        setTool('select');
     }
 
     // ═══ Delete ═══
-
-    async function deleteCountry(id, feature) {
+    function confirmDeleteCountry() {
+         const feature = CMapsPanel.getCurrentFeature();
+         if (feature) {
+             const name = feature.properties?.name || 'this country';
+             document.querySelector('.delete-country-name').textContent = name;
+             // Unbind previous click events
+             const btnCascade = document.querySelector('[data-delete-mode="cascade"]');
+             const btnUnclaim = document.querySelector('[data-delete-mode="unclaim"]');
+             
+             btnCascade.onclick = () => deleteCountry(feature, 'cascade');
+             btnUnclaim.onclick = () => deleteCountry(feature, 'unclaim');
+             
+             CMapsPanel.openModal('delete-modal');
+         }
+    }
+    
+    async function deleteCountry(feature, mode) {
+        const id = feature.properties?.id || feature.id;
         try {
             CMapsUtils.setStatus('Deleting...');
-            await CMapsUtils.api(`/api/countries/${id}`, { method: 'DELETE' });
+            await CMapsUtils.api(`/api/countries/${id}?mode=${mode}`, { method: 'DELETE' });
             CMapsHistory.push('delete', { before: feature });
             CMapsGlobe.deselectCountry();
             await CMapsGlobe.refreshCountries();
+            CMapsPanel.closeModal();
             CMapsUtils.toast('Country deleted', 'success');
             CMapsUtils.setStatus('Ready');
         } catch (err) {
@@ -616,7 +327,12 @@ const CMapsEditor = (() => {
     function getMergeSelection() { return mergeSelection; }
     function clearMergeSelection() {
         mergeSelection = [];
-        document.getElementById('btn-merge').disabled = true;
+        const btnMerge = document.getElementById('btn-merge');
+        if (btnMerge) btnMerge.disabled = true;
+    }
+    
+    function getCurrentTool() {
+        return currentTool;
     }
 
     return {
@@ -627,5 +343,7 @@ const CMapsEditor = (() => {
         toggleMergeSelect,
         getMergeSelection,
         clearMergeSelection,
+        getCurrentTool,
+        handleRegionClick,
     };
 })();

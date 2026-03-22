@@ -80,3 +80,55 @@ def get_region(region_id: int, db: Session = Depends(get_db)):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Region not found")
     return region.to_geojson_feature()
+
+
+@router.put("/{region_id}")
+def update_region(region_id: int, data: dict, db: Session = Depends(get_db)):
+    """Update a region's properties."""
+    from fastapi import HTTPException
+    from services.aggregation import propagate_region_change
+
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    if 'name' in data:
+        region.name = data['name']
+    if 'population' in data:
+        region.population = int(data['population'] or 0)
+    if 'area_km2' in data:
+        region.area_km2 = float(data['area_km2'] or 0)
+    if 'capital_name' in data:
+        region.capital_name = data['capital_name']
+    if 'color' in data:
+        region.color = data['color']
+
+    db.commit()
+    db.refresh(region)
+
+    # Recalculate parent country stats
+    propagate_region_change(db, region_id)
+
+    return region.to_geojson_feature()
+
+
+@router.post("/bulk-assign")
+def bulk_assign_regions(data: dict, db: Session = Depends(get_db)):
+    """Assign multiple regions to a new parent country."""
+    from fastapi import HTTPException
+    from services.aggregation import reassign_region
+
+    region_ids = data.get('region_ids', [])
+    target_country_id = data.get('country_id')
+
+    if not region_ids or not target_country_id:
+        raise HTTPException(status_code=400, detail="Provide region_ids and country_id")
+
+    results = []
+    for rid in region_ids:
+        reassign_region(db, rid, target_country_id)
+        region = db.query(Region).filter(Region.id == rid).first()
+        if region:
+            results.append(region.to_geojson_feature())
+
+    return {"assigned": len(results), "regions": results}

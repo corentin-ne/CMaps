@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from database import get_db, Project, Country
+from database import get_db, Project, Country, Region, Capital
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -18,7 +18,7 @@ class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
-
+ 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -37,6 +37,36 @@ def _snapshot_countries(db: Session) -> str:
         }
     }
     return json.dumps(collection)
+
+
+def _full_state_snapshot(db: Session) -> str:
+    """Capture complete world state: countries + regions + capitals as a CMaps bundle."""
+    countries = db.query(Country).all()
+    regions = db.query(Region).all()
+    capitals = db.query(Capital).all()
+
+    bundle = {
+        "cmaps_version": "2.0.0",
+        "saved_at": datetime.datetime.utcnow().isoformat(),
+        "countries": {
+            "type": "FeatureCollection",
+            "features": [c.to_geojson_feature() for c in countries],
+        },
+        "regions": {
+            "type": "FeatureCollection",
+            "features": [r.to_geojson_feature() for r in regions],
+        },
+        "capitals": {
+            "type": "FeatureCollection",
+            "features": [c.to_geojson_feature() for c in capitals],
+        },
+        "stats": {
+            "total_countries": len(countries),
+            "total_regions": len(regions),
+            "total_capitals": len(capitals),
+        }
+    }
+    return json.dumps(bundle)
 
 
 @router.get("")
@@ -171,10 +201,21 @@ def export_project(project_id: int, db: Session = Depends(get_db)):
 
 @router.get("/export/current")
 def export_current(db: Session = Depends(get_db)):
-    """Export current map state as a downloadable GeoJSON file."""
+    """Export current map state as a downloadable GeoJSON file (countries only)."""
     snapshot = _snapshot_countries(db)
     return Response(
         content=snapshot,
         media_type="application/geo+json",
         headers={"Content-Disposition": 'attachment; filename="cmaps_export.geojson"'},
+    )
+
+
+@router.get("/export/full")
+def export_full_state(db: Session = Depends(get_db)):
+    """Export complete world state (countries + regions + capitals) as a CMaps bundle."""
+    bundle = _full_state_snapshot(db)
+    return Response(
+        content=bundle,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="cmaps_full_export.cmaps.json"'},
     )

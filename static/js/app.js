@@ -19,11 +19,24 @@ const CMapsApp = (() => {
         CMapsSearch.init();
         CMapsEditor.init();
         CMapsHistory.init();
+        CMapsContextMenu.init();
+        CMapsScaleBar.init();
+        CMapsLeaderboard.init();
 
         // Setup global event handlers
         setupKeyboardShortcuts();
         setupTopBarActions();
         setupLayerToggles();
+        setupThemeToggle();
+
+        // Wire scale bar updates to globe movement
+        const map = CMapsGlobe.getMap?.();
+        if (map) {
+            map.on('moveend', () => CMapsScaleBar.update(map));
+            map.on('zoomend', () => CMapsScaleBar.update(map));
+            // Initial update
+            map.once('idle', () => CMapsScaleBar.update(map));
+        }
 
         CMapsUtils.toast('Welcome to CMaps! Click on any country to get started.', 'info', 4000);
     }
@@ -68,17 +81,11 @@ const CMapsApp = (() => {
                 case 'v':
                     CMapsEditor.setTool('select');
                     break;
-                case 'p':
-                    CMapsEditor.setTool('polygon');
+                case 'a':
+                    CMapsEditor.setTool('add-regions');
                     break;
-                case 'l':
-                    CMapsEditor.setTool('line');
-                    break;
-                case 'f':
-                    CMapsEditor.setTool('freehand');
-                    break;
-                case 'e':
-                    CMapsEditor.setTool('edit');
+                case 'n':
+                    document.getElementById('btn-new-country')?.click();
                     break;
                 case 'escape':
                     CMapsGlobe.deselectCountry();
@@ -139,6 +146,27 @@ const CMapsApp = (() => {
             cb.addEventListener('change', () => {
                 CMapsGlobe.toggleLayer(cb.dataset.layer, cb.checked);
             });
+        });
+    }
+
+    /**
+     * Theme toggle (dark/light).
+     */
+    function setupThemeToggle() {
+        const btn = document.getElementById('btn-theme-toggle');
+        if (!btn) return;
+
+        // Restore saved theme
+        const saved = localStorage.getItem('cmaps-theme');
+        if (saved === 'light') {
+            document.body.classList.add('light-theme');
+        }
+
+        btn.addEventListener('click', () => {
+            document.body.classList.toggle('light-theme');
+            const isLight = document.body.classList.contains('light-theme');
+            localStorage.setItem('cmaps-theme', isLight ? 'light' : 'dark');
+            CMapsUtils.toast(`Switched to ${isLight ? 'light' : 'dark'} mode`, 'info');
         });
     }
 
@@ -247,15 +275,16 @@ const CMapsApp = (() => {
 
     async function exportGeoJSON() {
         try {
-            const response = await fetch('/api/projects/export/current');
+            // Export full state bundle (countries + regions + capitals)
+            const response = await fetch('/api/projects/export/full');
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'cmaps_export.geojson';
+            a.download = 'cmaps_export.cmaps.json';
             a.click();
             URL.revokeObjectURL(url);
-            CMapsUtils.toast('GeoJSON exported!', 'success');
+            CMapsUtils.toast('Full state exported (countries + regions + capitals)!', 'success');
         } catch (err) {
             CMapsUtils.toast('Export failed', 'error');
         }
@@ -268,7 +297,48 @@ const CMapsApp = (() => {
         const reader = new FileReader();
         reader.onload = async (event) => {
             try {
-                const geojson = JSON.parse(event.target.result);
+                const data = JSON.parse(event.target.result);
+
+                // Detect CMaps bundle format
+                if (data.cmaps_version && data.countries) {
+                    CMapsUtils.setStatus('Importing CMaps bundle...');
+                    const geojson = data.countries;
+                    if (!geojson.features || !Array.isArray(geojson.features)) {
+                        CMapsUtils.toast('Invalid CMaps bundle', 'error');
+                        return;
+                    }
+                    let imported = 0;
+                    for (const feature of geojson.features) {
+                        const props = feature.properties || {};
+                        try {
+                            await CMapsUtils.api('/api/countries', {
+                                method: 'POST',
+                                body: {
+                                    name: props.name || `Imported ${imported + 1}`,
+                                    geometry: feature.geometry,
+                                    population: props.population || 0,
+                                    capital: props.capital || null,
+                                    flag_emoji: props.flag_emoji || '🏳️',
+                                    color: props.color || CMapsUtils.randomColor(),
+                                    continent: props.continent || null,
+                                    subregion: props.subregion || null,
+                                    gdp_md: props.gdp_md || null,
+                                },
+                            });
+                            imported++;
+                        } catch (err) {
+                            console.warn('Failed to import feature:', err);
+                        }
+                    }
+                    await CMapsGlobe.refreshCountries();
+                    CMapsUtils.toast(`Imported ${imported} countries from CMaps bundle!`, 'success');
+                    CMapsUtils.setStatus('Ready');
+                    e.target.value = '';
+                    return;
+                }
+
+                // Standard GeoJSON format
+                const geojson = data;
                 if (!geojson.features || !Array.isArray(geojson.features)) {
                     CMapsUtils.toast('Invalid GeoJSON file', 'error');
                     return;
@@ -301,7 +371,7 @@ const CMapsApp = (() => {
                 CMapsUtils.toast(`Imported ${imported} countries!`, 'success');
                 CMapsUtils.setStatus('Ready');
             } catch (err) {
-                CMapsUtils.toast('Failed to parse GeoJSON file', 'error');
+                CMapsUtils.toast('Failed to parse file', 'error');
             }
         };
         reader.readAsText(file);

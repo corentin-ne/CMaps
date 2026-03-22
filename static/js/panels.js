@@ -1,293 +1,280 @@
 /**
  * CMaps — Panels Module
- * Manages the right info panel and modal dialogs.
+ * Right info panel + modal management. Shows country details, editable fields,
+ * and action buttons. Includes delete modal with cascade/unclaim choice.
  */
 const CMapsPanel = (() => {
     let currentFeature = null;
+    let isEditing = false;
 
     function init() {
-        // Panel close button
-        document.getElementById('panel-close').addEventListener('click', hide);
+        // Close panel button
+        document.getElementById('btn-close-panel')?.addEventListener('click', hide);
 
-        // Save country changes
-        document.getElementById('btn-save-country').addEventListener('click', saveCountryChanges);
+        // Save button
+        document.getElementById('btn-save')?.addEventListener('click', saveCurrentCountry);
 
-        // Edit borders button
-        document.getElementById('btn-edit-borders').addEventListener('click', () => {
-            if (currentFeature) {
-                CMapsEditor.startEditMode(currentFeature);
-            }
+        // Edit border button
+        document.getElementById('btn-edit-border')?.addEventListener('click', () => {
+            if (currentFeature) CMapsEditor.startEditMode(currentFeature);
         });
 
         // Split button (panel)
-        document.getElementById('btn-split-country').addEventListener('click', () => {
+        document.getElementById('btn-split-panel')?.addEventListener('click', () => {
+            if (currentFeature) CMapsEditor.startSplitMode(currentFeature);
+        });
+
+        // Delete button
+        document.getElementById('btn-delete-panel')?.addEventListener('click', () => {
             if (currentFeature) {
-                CMapsEditor.startSplitMode(currentFeature);
+                const id = currentFeature.id || currentFeature.properties?.id;
+                const name = currentFeature.properties?.name || 'this country';
+                openDeleteModal(id, name);
             }
         });
 
-        // Delete button (panel)
-        document.getElementById('btn-delete-country').addEventListener('click', () => {
-            if (currentFeature) deleteCountry(currentFeature);
-        });
-
-        // Color picker live update
-        document.getElementById('country-color').addEventListener('input', (e) => {
+        // Color picker sync
+        document.getElementById('color-picker')?.addEventListener('input', (e) => {
             document.getElementById('color-hex').textContent = e.target.value;
         });
 
-        // Population edit toggle
-        const popStat = document.getElementById('stat-population');
-        const popEdit = document.getElementById('edit-population');
-        popStat.addEventListener('click', () => {
-            popStat.classList.add('hidden');
-            popEdit.classList.remove('hidden');
-            popEdit.focus();
-        });
-        popEdit.addEventListener('blur', () => {
-            popStat.classList.remove('hidden');
-            popEdit.classList.add('hidden');
-            popStat.textContent = CMapsUtils.formatNumber(popEdit.value);
+        // Flag upload button
+        document.getElementById('btn-flag-upload')?.addEventListener('click', () => {
+            document.getElementById('flag-upload-input')?.click();
         });
 
-        // Capital edit toggle
-        const capStat = document.getElementById('stat-capital');
-        const capEdit = document.getElementById('edit-capital');
-        capStat.addEventListener('click', () => {
-            capStat.classList.add('hidden');
-            capEdit.classList.remove('hidden');
-            capEdit.focus();
-        });
-        capEdit.addEventListener('blur', () => {
-            capStat.classList.remove('hidden');
-            capEdit.classList.add('hidden');
-            capStat.textContent = capEdit.value || '—';
-        });
+        // Flag file input
+        document.getElementById('flag-upload-input')?.addEventListener('change', handleFlagUpload);
 
-        // Modal close buttons
-        document.querySelectorAll('.modal-close').forEach(btn => {
-            btn.addEventListener('click', closeModal);
-        });
-
-        // Clicking overlay closes modal
-        document.getElementById('modal-overlay').addEventListener('click', (e) => {
-            if (e.target.id === 'modal-overlay') closeModal();
+        // Close modal buttons
+        document.querySelectorAll('.modal-close-btn').forEach(btn => {
+            btn.addEventListener('click', () => closeModal(btn.closest('.modal-overlay')));
         });
     }
 
     /**
-     * Show country info in the right panel.
+     * Display a country in the right info panel.
      */
     function showCountry(feature) {
         currentFeature = feature;
+        const p = feature.properties;
         const panel = document.getElementById('info-panel');
-        const props = feature.properties || {};
-
-        // Fill in data
-        document.getElementById('country-flag').textContent = props.flag_emoji || '🏳️';
-        document.getElementById('country-name-input').value = props.name || 'Unknown';
-        document.getElementById('stat-population').textContent = CMapsUtils.formatNumber(props.population);
-        document.getElementById('edit-population').value = props.population || 0;
-        document.getElementById('stat-area').textContent = CMapsUtils.formatArea(props.area_km2);
-        document.getElementById('stat-capital').textContent = props.capital_name || '—';
-        document.getElementById('edit-capital').value = props.capital_name || '';
-        document.getElementById('stat-continent').textContent = props.continent || '—';
-        document.getElementById('country-color').value = props.color || '#7c9eb2';
-        document.getElementById('color-hex').textContent = props.color || '#7c9eb2';
-        document.getElementById('country-flag-input').value = props.flag_emoji || '🏳️';
-
-        // Show panel
         panel.classList.remove('hidden');
 
-        // Load regions and cities
-        loadSubdivisionsForCountry({ ...props, id: feature.id || feature.properties?.id });
-    }
-
-    /**
-     * Load regions and cities that belong to the selected country.
-     */
-    async function loadSubdivisionsForCountry(props) {
-        const list = document.getElementById('cities-list');
-        list.innerHTML = '<div class="empty-state">Loading...</div>';
-
-        try {
-            const countryId = props.id || currentFeature?.id;
-            const [regions, allCities] = await Promise.all([
-                CMapsUtils.api(`/api/regions/by-country/${countryId}`).catch(() => ({ features: [] })),
-                CMapsUtils.api(`/api/cities?zoom=12`).catch(() => ({ features: [] }))
-            ]);
-
-            const countryName = props.name;
-
-            // Filter cities by country name
-            const countryCities = allCities.features
-                .filter(f => f.properties.country === countryName)
-                .sort((a, b) => (b.properties.pop_max || 0) - (a.properties.pop_max || 0))
-                .slice(0, 20);
-
-            let html = '';
-
-            // Regions
-            if (regions.features && regions.features.length > 0) {
-                html += `<div class="popup-subtitle" style="margin-bottom: 8px;">Regions (${regions.features.length})</div>`;
-                html += regions.features.map(reg => {
-                    const rp = reg.properties;
-                    return `
-                        <div class="item-row region-item" data-id="${rp.id}">
-                            <div class="item-main">
-                                <span class="item-name">${rp.name}</span>
-                                <span class="item-sub">${rp.region_type || 'Region'}</span>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-                html += `<div style="height: 16px;"></div>`;
-            }
-
-            // Cities
-            html += `<div class="popup-subtitle" style="margin-bottom: 8px;">Cities (${countryCities.length})</div>`;
-            if (countryCities.length > 0) {
-                html += countryCities.map(city => {
-                    const cp = city.properties;
-                    return `
-                        <div class="item-row city-item" data-lng="${cp.longitude}" data-lat="${cp.latitude}">
-                            <div class="item-main">
-                                <span class="item-name">
-                                    ${cp.name} ${cp.is_capital ? ' <span style="color:var(--accent);">★</span>' : ''}
-                                </span>
-                                <span class="item-sub">${CMapsUtils.formatPopShort(cp.pop_max)}</span>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            } else {
-                html += '<div class="empty-state">No cities found</div>';
-            }
-
-            list.innerHTML = html;
-
-            // Click Handlers
-            list.querySelectorAll('.city-item').forEach(item => {
-                item.addEventListener('click', () => {
-                    const lng = parseFloat(item.dataset.lng);
-                    const lat = parseFloat(item.dataset.lat);
-                    CMapsGlobe.flyTo(lng, lat, 8);
-                });
-            });
-
-            list.querySelectorAll('.region-item').forEach(item => {
-                item.addEventListener('click', async () => {
-                    const regionId = item.dataset.id;
-                    try {
-                        const regionFeature = await CMapsUtils.api(`/api/regions/${regionId}`);
-                        if (regionFeature.geometry && regionFeature.geometry.type === "Polygon" || regionFeature.geometry.type === "MultiPolygon") {
-                            // Calculate center to fly to (using turf or simplest bounds)
-                            const center = turf.centerOfMass(regionFeature).geometry.coordinates;
-                            CMapsGlobe.flyTo(center[0], center[1], 5);
-                        }
-                    } catch (e) {
-                         console.error("Could not find region geometry", e);
-                    }
-                });
-            });
-
-        } catch (err) {
-            list.innerHTML = '<div class="empty-state">Failed to load details</div>';
+        // Flag display — use uploaded image if available, else emoji
+        const flagEl = document.getElementById('country-flag');
+        if (p.flag_url) {
+            flagEl.innerHTML = `<img src="${p.flag_url}" alt="Flag" class="flag-image" />`;
+        } else {
+            flagEl.textContent = p.flag_emoji || '🏳️';
         }
+
+        // Name
+        document.getElementById('country-name').value = p.name || '';
+
+        // Stats
+        document.getElementById('stat-pop').textContent = CMapsUtils.formatNumber(p.population);
+        document.getElementById('stat-area').textContent = CMapsUtils.formatArea(p.area_km2);
+        document.getElementById('stat-capital').textContent = p.capital || '—';
+        document.getElementById('stat-continent').textContent = p.continent || '—';
+
+        // Extended stats
+        const gdpEl = document.getElementById('stat-gdp');
+        if (gdpEl) gdpEl.textContent = CMapsUtils.formatGDP(p.gdp_md);
+        const hdiEl = document.getElementById('stat-hdi');
+        if (hdiEl) hdiEl.textContent = p.hdi_index != null ? p.hdi_index.toFixed(3) : '—';
+        const litEl = document.getElementById('stat-literacy');
+        if (litEl) litEl.textContent = p.literacy_rate != null ? `${p.literacy_rate.toFixed(1)}%` : '—';
+
+        // Color
+        document.getElementById('color-picker').value = p.color || '#7c9eb2';
+        document.getElementById('color-hex').textContent = p.color || '#7c9eb2';
+
+        // Flag emoji
+        document.getElementById('flag-input').value = p.flag_emoji || '🏳️';
+
+        // Load cities/capitals for this country
+        loadCountryCities(p.id);
+
+        // Load region and city count stats
+        loadCountryStats(p.id);
     }
 
-    /**
-     * Hide the info panel.
-     */
     function hide() {
-        document.getElementById('info-panel').classList.add('hidden');
+        const panel = document.getElementById('info-panel');
+        panel.classList.add('hidden');
         currentFeature = null;
+        CMapsGlobe.deselectCountry();
     }
 
-    /**
-     * Save country property changes via API.
-     */
-    async function saveCountryChanges() {
+    async function saveCurrentCountry() {
         if (!currentFeature) return;
+        const id = currentFeature.id || currentFeature.properties?.id;
 
-        const id = currentFeature.properties?.id || currentFeature.id;
+        const before = { ...currentFeature };
+
         const updates = {
-            name: document.getElementById('country-name-input').value,
-            population: parseInt(document.getElementById('edit-population').value) || 0,
-            capital_name: document.getElementById('edit-capital').value || null,
-            color: document.getElementById('country-color').value,
-            flag_emoji: document.getElementById('country-flag-input').value || '🏳️',
+            name: document.getElementById('country-name').value,
+            color: document.getElementById('color-picker').value,
+            flag_emoji: document.getElementById('flag-input').value,
         };
 
         try {
-            CMapsUtils.setStatus('Saving changes...');
+            CMapsUtils.setStatus('Saving...');
             const result = await CMapsUtils.api(`/api/countries/${id}`, {
                 method: 'PUT',
                 body: updates,
             });
 
-            // Record for undo
-            CMapsHistory.push('update', { before: currentFeature, after: result });
-
+            CMapsHistory.push('update', { before, after: result });
             await CMapsGlobe.refreshCountries();
-            CMapsUtils.toast('Country updated', 'success');
+            CMapsUtils.toast('Country saved!', 'success');
             CMapsUtils.setStatus('Ready');
-
-            // Update panel with fresh data
-            showCountry(result);
         } catch (err) {
-            CMapsUtils.toast(`Failed to save: ${err.message}`, 'error');
-            CMapsUtils.setStatus('Error saving');
+            CMapsUtils.toast(`Save failed: ${err.message}`, 'error');
+            CMapsUtils.setStatus('Ready');
+        }
+    }
+
+    async function loadCountryCities(countryId) {
+        const container = document.getElementById('cities-list');
+        if (!container) return;
+
+        try {
+            const data = await CMapsUtils.api(`/api/capitals/by-country/${countryId}`);
+            const cities = data.features || [];
+
+            if (cities.length === 0) {
+                container.innerHTML = '<div class="empty-state">No cities found</div>';
+                return;
+            }
+
+            container.innerHTML = cities.map(c => {
+                const p = c.properties;
+                return `
+                    <div class="city-item">
+                        <span>${p.is_country_capital ? '★' : '•'} ${p.name}</span>
+                        <span>${CMapsUtils.formatPopShort(p.population)}</span>
+                    </div>
+                `;
+            }).join('');
+        } catch (err) {
+            container.innerHTML = '<div class="empty-state">Failed to load</div>';
+        }
+    }
+
+    async function loadCountryStats(countryId) {
+        // Region count
+        const regEl = document.getElementById('stat-regions');
+        const cityEl = document.getElementById('stat-cities');
+
+        try {
+            const [regions, capitals] = await Promise.all([
+                CMapsUtils.api(`/api/regions/by-country/${countryId}`).catch(() => ({ features: [] })),
+                CMapsUtils.api(`/api/capitals/by-country/${countryId}`).catch(() => ({ features: [] })),
+            ]);
+
+            const regionCount = regions.features?.length || 0;
+            const cityCount = capitals.features?.length || 0;
+
+            if (regEl) regEl.textContent = regionCount > 0 ? regionCount : '—';
+            if (cityEl) cityEl.textContent = cityCount > 0 ? cityCount : '—';
+        } catch (err) {
+            if (regEl) regEl.textContent = '—';
+            if (cityEl) cityEl.textContent = '—';
         }
     }
 
     /**
-     * Delete a country.
+     * Open the delete confirmation modal with cascade/unclaim choice.
      */
-    async function deleteCountry(feature) {
-        const id = feature.properties?.id || feature.id;
-        const name = feature.properties?.name || 'this country';
+    function openDeleteModal(countryId, countryName) {
+        const modal = document.getElementById('delete-modal');
+        if (!modal) {
+            // Fallback to simple confirm
+            if (confirm(`Delete "${countryName}"? This cannot be undone.`)) {
+                deleteCountry(countryId, 'cascade');
+            }
+            return;
+        }
 
-        if (!confirm(`Delete "${name}"? This action can be undone.`)) return;
+        modal.querySelector('.delete-country-name').textContent = countryName;
+        modal.dataset.countryId = countryId;
+        modal.classList.remove('hidden');
 
+        // Bind action buttons
+        modal.querySelector('[data-delete-mode="cascade"]')?.addEventListener('click', () => {
+            deleteCountry(countryId, 'cascade');
+            closeModal(modal);
+        }, { once: true });
+
+        modal.querySelector('[data-delete-mode="unclaim"]')?.addEventListener('click', () => {
+            deleteCountry(countryId, 'unclaim');
+            closeModal(modal);
+        }, { once: true });
+    }
+
+    async function deleteCountry(countryId, mode) {
         try {
-            CMapsUtils.setStatus('Deleting country...');
-            await CMapsUtils.api(`/api/countries/${id}`, { method: 'DELETE' });
-
+            const feature = currentFeature;
+            CMapsUtils.setStatus('Deleting...');
+            await CMapsUtils.api(`/api/countries/${countryId}?mode=${mode}`, {
+                method: 'DELETE',
+            });
             CMapsHistory.push('delete', { before: feature });
-
-            CMapsGlobe.deselectCountry();
+            hide();
             await CMapsGlobe.refreshCountries();
-            CMapsUtils.toast(`"${name}" deleted`, 'success');
+            CMapsUtils.toast('Country deleted', 'success');
             CMapsUtils.setStatus('Ready');
         } catch (err) {
-            CMapsUtils.toast(`Failed to delete: ${err.message}`, 'error');
+            CMapsUtils.toast(`Delete failed: ${err.message}`, 'error');
+            CMapsUtils.setStatus('Ready');
         }
     }
 
-    // ═══ Modal Management ═══
+    async function handleFlagUpload(e) {
+        const file = e.target.files[0];
+        if (!file || !currentFeature) return;
 
-    function openModal(modalId) {
-        const overlay = document.getElementById('modal-overlay');
-        // Hide all modals first
-        overlay.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
-        // Show target
-        document.getElementById(modalId).classList.remove('hidden');
-        overlay.classList.remove('hidden');
+        const id = currentFeature.id || currentFeature.properties?.id;
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            CMapsUtils.setStatus('Uploading flag...');
+            const res = await fetch(`/api/flags/${id}`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!res.ok) throw new Error('Upload failed');
+            const result = await res.json();
+
+            // Update flag display
+            const flagEl = document.getElementById('country-flag');
+            flagEl.innerHTML = `<img src="${result.flag_url}" alt="Flag" class="flag-image" />`;
+
+            await CMapsGlobe.refreshCountries();
+            CMapsUtils.toast('Flag uploaded!', 'success');
+            CMapsUtils.setStatus('Ready');
+        } catch (err) {
+            CMapsUtils.toast(`Flag upload failed: ${err.message}`, 'error');
+            CMapsUtils.setStatus('Ready');
+        }
     }
 
-    function closeModal() {
-        document.getElementById('modal-overlay').classList.add('hidden');
+    function openModal(selector) {
+        const modal = document.querySelector(selector);
+        if (modal) modal.classList.remove('hidden');
+    }
+
+    function closeModal(el) {
+        if (typeof el === 'string') {
+            el = document.querySelector(el);
+        }
+        if (el) el.classList.add('hidden');
     }
 
     function getCurrentFeature() { return currentFeature; }
 
-    return {
-        init,
-        showCountry,
-        hide,
-        openModal,
-        closeModal,
-        getCurrentFeature,
-    };
+    return { init, showCountry, hide, openModal, closeModal, getCurrentFeature, openDeleteModal };
 })();

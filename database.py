@@ -46,6 +46,10 @@ class Country(Base):
     gdp_md = Column(Float, nullable=True)  # GDP in millions USD
     currency = Column(String(100), nullable=True)
     government_type = Column(String(255), nullable=True)
+    flag_url = Column(String(500), nullable=True)  # Custom flag image URL
+    hdi_index = Column(Float, nullable=True)  # Human Development Index
+    literacy_rate = Column(Float, nullable=True)  # Literacy rate %
+    custom_fields = Column(Text, nullable=True)  # JSON string of custom typed fields
     is_custom = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow,
@@ -68,6 +72,7 @@ class Country(Base):
             "area_km2": round(self.area_km2, 2) if self.area_km2 else 0,
             "capital": self.capital,
             "flag_emoji": self.flag_emoji,
+            "flag_url": self.flag_url,
             "color": self.color,
             "continent": self.continent,
             "subregion": self.subregion,
@@ -75,6 +80,11 @@ class Country(Base):
             "gdp_md": self.gdp_md,
             "currency": self.currency,
             "government_type": self.government_type,
+            "hdi_index": self.hdi_index,
+            "literacy_rate": self.literacy_rate,
+            "custom_fields": (json.loads(self.custom_fields)
+                              if self.custom_fields and isinstance(self.custom_fields, str)
+                              else self.custom_fields),
             "is_custom": self.is_custom,
         }
         feature = {"type": "Feature", "properties": properties}
@@ -102,6 +112,7 @@ class Region(Base):
     geometry = Column(Text, nullable=False)
     area_km2 = Column(Float, default=0.0)
     population = Column(Integer, default=0)
+    gdp_md = Column(Float, nullable=True)  # GDP in millions for aggregation
     capital_name = Column(String(255), nullable=True)
     region_type = Column(String(100), nullable=True)  # state/province/dept
     color = Column(String(7), nullable=True)

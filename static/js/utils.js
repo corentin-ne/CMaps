@@ -1,7 +1,76 @@
 /**
  * CMaps — Shared Utilities
+ * API wrapper with IndexedDB caching, formatting, and helper functions.
  */
 const CMapsUtils = (() => {
+
+    // ═══ IndexedDB Cache ═══
+    const IDB_NAME = 'cmaps-cache';
+    const IDB_VERSION = 1;
+    const IDB_STORE = 'api-cache';
+    const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minute TTL
+    let idb = null;
+
+    /**
+     * Open the IndexedDB for caching.
+     */
+    function openIDB() {
+        return new Promise((resolve, reject) => {
+            if (idb) return resolve(idb);
+            const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(IDB_STORE)) {
+                    db.createObjectStore(IDB_STORE, { keyPath: 'url' });
+                }
+            };
+            req.onsuccess = () => { idb = req.result; resolve(idb); };
+            req.onerror = () => resolve(null);
+        });
+    }
+
+    async function idbGet(url) {
+        try {
+            const db = await openIDB();
+            if (!db) return null;
+            return new Promise((resolve) => {
+                const tx = db.transaction(IDB_STORE, 'readonly');
+                const store = tx.objectStore(IDB_STORE);
+                const req = store.get(url);
+                req.onsuccess = () => {
+                    const entry = req.result;
+                    if (entry && (Date.now() - entry.timestamp) < CACHE_TTL_MS) {
+                        resolve(entry.data);
+                    } else {
+                        resolve(null);
+                    }
+                };
+                req.onerror = () => resolve(null);
+            });
+        } catch { return null; }
+    }
+
+    async function idbPut(url, data) {
+        try {
+            const db = await openIDB();
+            if (!db) return;
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            const store = tx.objectStore(IDB_STORE);
+            store.put({ url, data, timestamp: Date.now() });
+        } catch { /* ignore */ }
+    }
+
+    async function idbClear() {
+        try {
+            const db = await openIDB();
+            if (!db) return;
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            const store = tx.objectStore(IDB_STORE);
+            store.clear();
+        } catch { /* ignore */ }
+    }
+
+    // ═══ Formatting ═══
 
     /**
      * Format a number with commas: 1234567 → "1,234,567"
@@ -24,6 +93,7 @@ const CMapsUtils = (() => {
      */
     function formatPopShort(n) {
         if (n == null || isNaN(n) || n === 0) return '—';
+        if (n >= 1e12) return (n / 1e12).toFixed(2) + 'T';
         if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
         if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
         if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
@@ -31,8 +101,16 @@ const CMapsUtils = (() => {
     }
 
     /**
-     * Debounce a function.
+     * Format GDP in millions to readable: 1234567 → "$1.23T"
      */
+    function formatGDP(gdpMd) {
+        if (gdpMd == null || isNaN(gdpMd) || gdpMd === 0) return '—';
+        const usd = gdpMd * 1e6; // Convert from millions
+        return '$' + formatPopShort(usd);
+    }
+
+    // ═══ Utility Functions ═══
+
     function debounce(fn, delay = 300) {
         let timer;
         return function (...args) {
@@ -41,9 +119,6 @@ const CMapsUtils = (() => {
         };
     }
 
-    /**
-     * Throttle a function.
-     */
     function throttle(fn, limit = 100) {
         let waiting = false;
         return function (...args) {
@@ -55,9 +130,6 @@ const CMapsUtils = (() => {
         };
     }
 
-    /**
-     * Lighten a hex color.
-     */
     function lightenColor(hex, amount = 0.3) {
         hex = hex.replace('#', '');
         const r = Math.min(255, parseInt(hex.substr(0, 2), 16) + Math.round(255 * amount));
@@ -66,9 +138,6 @@ const CMapsUtils = (() => {
         return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
     }
 
-    /**
-     * Darken a hex color.
-     */
     function darkenColor(hex, amount = 0.2) {
         hex = hex.replace('#', '');
         const r = Math.max(0, parseInt(hex.substr(0, 2), 16) - Math.round(255 * amount));
@@ -78,7 +147,7 @@ const CMapsUtils = (() => {
     }
 
     /**
-     * API wrapper with error handling.
+     * API wrapper with IndexedDB caching for GET requests.
      */
     async function api(url, options = {}) {
         try {
@@ -86,17 +155,46 @@ const CMapsUtils = (() => {
                 headers: { 'Content-Type': 'application/json' },
             };
             const config = { ...defaults, ...options };
+            const isGet = !options.method || options.method === 'GET';
+
             if (options.body && typeof options.body === 'object') {
                 config.body = JSON.stringify(options.body);
             }
+
+            // Invalidate cache on mutations
+            if (!isGet) {
+                await idbClear();
+            } else if (!options.bypassCache) {
+                // Try IndexedDB cache first for GET requests
+                const cached = await idbGet(url);
+                if (cached !== null) {
+                    // Stale-while-revalidate: background refresh
+                    fetch(url, config).then(async res => {
+                        if (res.ok) {
+                            const ct = res.headers.get('content-type');
+                            if (ct && (ct.includes('application/json') || ct.includes('application/geo+json'))) {
+                                const freshData = await res.json();
+                                await idbPut(url, freshData);
+                            }
+                        }
+                    }).catch(() => {});
+                    return cached;
+                }
+            }
+
+            // Network request
             const response = await fetch(url, config);
             if (!response.ok) {
                 const err = await response.json().catch(() => ({ detail: response.statusText }));
                 throw new Error(err.detail || `HTTP ${response.status}`);
             }
+
             const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json') || contentType.includes('application/geo+json')) {
-                return await response.json();
+            if (contentType && (contentType.includes('application/json') || contentType.includes('application/geo+json'))) {
+                const data = await response.json();
+                // Cache successful GET responses in IndexedDB
+                if (isGet) await idbPut(url, data);
+                return data;
             }
             return response;
         } catch (error) {
@@ -114,6 +212,7 @@ const CMapsUtils = (() => {
             success: '✓',
             error: '✗',
             info: 'ℹ',
+            warning: '⚠',
         };
         const el = document.createElement('div');
         el.className = `toast ${type}`;
@@ -162,6 +261,7 @@ const CMapsUtils = (() => {
         formatNumber,
         formatArea,
         formatPopShort,
+        formatGDP,
         debounce,
         throttle,
         lightenColor,

@@ -7,11 +7,16 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 
-from database import get_db, Country, EditHistory
+from database import get_db, Country, Region, EditHistory
 from services.geo_utils import (
     calculate_area_km2, split_polygon, merge_polygons,
     validate_geojson, generate_color, get_centroid
 )
+from services.validators import (
+    validate_population, validate_area, validate_gdp,
+    validate_name, validate_color, ValidationError
+)
+from services.aggregation import recalculate_country
 
 router = APIRouter(prefix="/api/countries", tags=["countries"])
 
@@ -27,16 +32,23 @@ class CountryCreate(BaseModel):
     color: Optional[str] = None
     continent: Optional[str] = None
     subregion: Optional[str] = None
+    gdp_md: Optional[float] = None
+    hdi_index: Optional[float] = None
+    literacy_rate: Optional[float] = None
 
 class CountryUpdate(BaseModel):
     name: Optional[str] = None
     geometry: Optional[dict] = None
     population: Optional[int] = None
     capital: Optional[str] = None
+    capital_name: Optional[str] = None
     flag_emoji: Optional[str] = None
     color: Optional[str] = None
     continent: Optional[str] = None
     subregion: Optional[str] = None
+    gdp_md: Optional[float] = None
+    hdi_index: Optional[float] = None
+    literacy_rate: Optional[float] = None
 
 class MergeRequest(BaseModel):
     country_ids: List[int]
@@ -96,19 +108,28 @@ def create_country(data: CountryCreate, db: Session = Depends(get_db)):
     if not validate_geojson(data.geometry):
         raise HTTPException(status_code=400, detail="Invalid GeoJSON geometry")
 
+    try:
+        pop = validate_population(data.population)
+        color = validate_color(data.color) or generate_color()
+        gdp = validate_gdp(data.gdp_md)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     area = calculate_area_km2(data.geometry)
-    color = data.color or generate_color()
 
     country = Country(
         name=data.name,
         geometry=json.dumps(data.geometry),
-        population=data.population,
+        population=pop,
         area_km2=area,
         capital=data.capital,
         flag_emoji=data.flag_emoji or "🏳️",
         color=color,
         continent=data.continent,
         subregion=data.subregion,
+        gdp_md=gdp,
+        hdi_index=data.hdi_index,
+        literacy_rate=data.literacy_rate,
         is_custom=True,
     )
     db.add(country)
@@ -144,17 +165,34 @@ def update_country(country_id: int, data: CountryUpdate, db: Session = Depends(g
         country.geometry = json.dumps(data.geometry)
         country.area_km2 = calculate_area_km2(data.geometry)
     if data.population is not None:
-        country.population = data.population
+        try:
+            country.population = validate_population(data.population)
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if data.capital is not None:
         country.capital = data.capital
+    if data.capital_name is not None:
+        country.capital = data.capital_name
     if data.flag_emoji is not None:
         country.flag_emoji = data.flag_emoji
     if data.color is not None:
-        country.color = data.color
+        try:
+            country.color = validate_color(data.color)
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if data.continent is not None:
         country.continent = data.continent
     if data.subregion is not None:
         country.subregion = data.subregion
+    if data.gdp_md is not None:
+        try:
+            country.gdp_md = validate_gdp(data.gdp_md)
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if data.hdi_index is not None:
+        country.hdi_index = data.hdi_index
+    if data.literacy_rate is not None:
+        country.literacy_rate = data.literacy_rate
 
     # Record history
     history = EditHistory(
@@ -171,13 +209,21 @@ def update_country(country_id: int, data: CountryUpdate, db: Session = Depends(g
 
 
 @router.delete("/{country_id}")
-def delete_country(country_id: int, db: Session = Depends(get_db)):
-    """Delete a country."""
+def delete_country(country_id: int, mode: str = Query("cascade", description="'cascade' to remove regions, 'unclaim' to orphan them"), db: Session = Depends(get_db)):
+    """Delete a country. Use mode='unclaim' to make regions independent."""
     country = db.query(Country).filter(Country.id == country_id).first()
     if not country:
         raise HTTPException(status_code=404, detail="Country not found")
 
     before = json.dumps(country.to_geojson_feature())
+
+    # Handle regions based on mode
+    if mode == 'unclaim':
+        # Set regions to unclaimed (country_id = null)
+        db.query(Region).filter(Region.country_id == country_id).update(
+            {Region.country_id: None}, synchronize_session='fetch'
+        )
+    # 'cascade' mode is handled by SQLAlchemy cascade="all, delete-orphan"
 
     # Record history
     history = EditHistory(
@@ -190,7 +236,7 @@ def delete_country(country_id: int, db: Session = Depends(get_db)):
     db.delete(country)
     db.commit()
 
-    return {"status": "deleted", "id": country_id}
+    return {"status": "deleted", "id": country_id, "mode": mode}
 
 
 @router.post("/merge")
@@ -317,3 +363,54 @@ def get_recent_history(limit: int = Query(50, le=100), db: Session = Depends(get
         "country_id": e.country_id,
         "timestamp": e.timestamp.isoformat() if e.timestamp else None,
     } for e in entries]
+
+
+@router.post("/from-region/{region_id}")
+def create_from_region(region_id: int, db: Session = Depends(get_db)):
+    """
+    Independence workflow — detach a region as a new sovereign country.
+    """
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    old_country_id = region.country_id
+
+    # Create new country from region data
+    import json as _json
+    geom = _json.loads(region.geometry) if isinstance(region.geometry, str) else region.geometry
+
+    new_country = Country(
+        name=region.name,
+        geometry=region.geometry,
+        population=region.population or 0,
+        area_km2=region.area_km2 or 0,
+        capital=region.capital_name,
+        flag_emoji="🏳️",
+        color=generate_color(),
+        continent=None,
+        subregion=None,
+        is_custom=True,
+    )
+    db.add(new_country)
+    db.flush()
+
+    # Reassign region to new country
+    region.country_id = new_country.id
+    db.flush()
+
+    # Record history
+    history = EditHistory(
+        action="independence",
+        country_id=new_country.id,
+        after_state=_json.dumps(new_country.to_geojson_feature()),
+    )
+    db.add(history)
+    db.commit()
+
+    # Recalculate old parent's stats
+    if old_country_id:
+        recalculate_country(db, old_country_id)
+
+    db.refresh(new_country)
+    return new_country.to_geojson_feature()
