@@ -35,7 +35,7 @@ const CMapsGlobe = (() => {
         RIVERS: 'rivers-line',
         LAKES: 'lakes-fill',
         MOUNTAINS: 'mountains-symbol',
-        CITIES: 'cities-symbol',
+        CITIES_DOT: 'cities-dot',
         CITIES_LABEL: 'cities-label',
         REGIONS_FILL: 'regions-fill',
         REGIONS_BORDER: 'regions-border',
@@ -155,12 +155,11 @@ const CMapsGlobe = (() => {
             // Initial zoom for scale-dependent loading
             const initZoom = map.getZoom();
 
-            const [rivers, lakes, mountains, mountainRanges, _unused, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
+            const [rivers, lakes, mountains, mountainRanges, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
                 CMapsUtils.api(`/api/features/rivers?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api(`/api/features/lakes?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountains').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountain-ranges').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                Promise.resolve(null), // cities loaded via URL source below
                 CMapsUtils.api('/api/regions/geojson').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/capitals?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api(`/api/features/urban-areas?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
@@ -189,8 +188,7 @@ const CMapsGlobe = (() => {
 
             addRegionsLayer(regionsData);
 
-            // Cities — let MapLibre fetch the GeoJSON itself via URL.
-            // This bypasses ALL JavaScript data handling (IndexedDB, fetch, JSON.parse).
+            // Cities — loaded directly from static GeoJSON file, zero backend processing
             addCitiesLayer();
 
             addCapitalsLayer(capitals);
@@ -745,50 +743,69 @@ const CMapsGlobe = (() => {
     }
 
     function addCitiesLayer() {
-        // Let MapLibre fetch the GeoJSON directly via URL.
-        // This completely bypasses JavaScript data handling.
+        // ─────────────────────────────────────────────────────────────
+        // CLEAN REIMPLEMENTATION — bypasses the API entirely.
+        // Reads the static Natural Earth GeoJSON file directly so
+        // MapLibre fetches, parses, and indexes it with zero backend
+        // code in the path.  Progressive disclosure is handled
+        // purely by circle-radius scaling + symbol collision, with
+        // NO zoom-based filter expressions (which are invalid in
+        // MapLibre and silently hide everything).
+        // ─────────────────────────────────────────────────────────────
         map.addSource('cities', {
             type: 'geojson',
-            data: '/api/cities?zoom=20',
+            data: '/static/data/ne_10m_populated_places_simple.geojson',
+            cluster: false,
         });
 
+        // City dot — radius scales by scalerank so important cities
+        // are bigger and always visible at lower zooms.
         map.addLayer({
-            id: LAYERS.CITIES + '-glow',
+            id: LAYERS.CITIES_DOT,
             type: 'circle',
             source: 'cities',
+            minzoom: 2,
             paint: {
-                'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 5, 6, 6, 10, 8, 14, 10],
-                'circle-color': 'rgba(148, 163, 184, 0.08)',
-                'circle-blur': 1,
-            },
-        });
-
-        map.addLayer({
-            id: LAYERS.CITIES,
-            type: 'circle',
-            source: 'cities',
-            paint: {
-                'circle-radius': ['interpolate', ['linear'], ['zoom'], 2, 2, 6, 3, 10, 4, 14, 6],
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    2, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 3, 4, 2, 8, 1, 10, 0.5],
+                    6, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 5, 4, 3.5, 8, 2.5, 10, 1.5],
+                    10, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 6, 4, 5, 8, 4, 10, 3],
+                ],
                 'circle-color': '#cbd5e1',
-                'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 10, 1.0, 14, 1.3],
-                'circle-stroke-color': 'rgba(15, 23, 42, 0.45)',
-                'circle-opacity': 0.92,
+                'circle-stroke-width': 0.6,
+                'circle-stroke-color': 'rgba(15, 23, 42, 0.5)',
+                'circle-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    2, 0.7,
+                    6, 0.9,
+                ],
             },
         });
 
+        // City label — symbol-sort-key by scalerank so the most
+        // important cities win collision detection at low zooms.
+        // text-allow-overlap: false ensures natural progressive reveal.
         map.addLayer({
             id: LAYERS.CITIES_LABEL,
             type: 'symbol',
             source: 'cities',
+            minzoom: 3,
             layout: {
                 'text-field': ['get', 'name'],
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
-                'text-size': ['interpolate', ['linear'], ['zoom'], 3, 9, 8, 10, 12, 13],
-                'text-offset': [0, 1.2],
+                'text-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    3, 9,
+                    7, 11,
+                    12, 14,
+                ],
+                'text-offset': [0, 1.0],
                 'text-anchor': 'top',
                 'text-allow-overlap': false,
                 'text-optional': true,
                 'text-max-width': 8,
+                'symbol-sort-key': ['get', 'scalerank'],
             },
             paint: {
                 'text-color': '#c8d6e5',
@@ -797,6 +814,8 @@ const CMapsGlobe = (() => {
                 'text-halo-blur': 0.5,
             },
         });
+
+        console.log('[CMaps] Cities layer added — source: static GeoJSON file');
     }
 
     function addRegionsLayer(geojson) {
@@ -1184,16 +1203,18 @@ const CMapsGlobe = (() => {
             map.getCanvas().style.cursor = 'pointer';
             const p = e.features[0].properties;
             const pop = p.pop_max || p.population || 0;
-            const tag = p.is_capital === true || p.is_capital === 'true'
+            const isCapital = Number(p.adm0cap) === 1;
+            const tag = isCapital
                 ? (layerType === 'capital' ? '★ Capital' : '★ Capital City')
                 : 'City';
+            const country = p.adm0name || p.country || p.country_name || '';
             const html = `
                 <div class="country-popup">
                     <div class="country-popup-name"><span>${tag}</span></div>
-                    <div style="font-size:13px;font-weight:600;margin:2px 0 4px">${p.name}</div>
+                    <div style="font-size:13px;font-weight:600;margin:2px 0 4px">${p.name || 'Unknown'}</div>
                     <div class="country-popup-stats">
                         ${pop > 0 ? `<div class="country-popup-stat"><span>Population</span><span>${CMapsUtils.formatPopShort(pop)}</span></div>` : ''}
-                        ${p.country || p.country_name ? `<div class="country-popup-stat"><span>Country</span><span>${p.country || p.country_name}</span></div>` : ''}
+                        ${country ? `<div class="country-popup-stat"><span>Country</span><span>${country}</span></div>` : ''}
                     </div>
                     <div class="country-popup-hint">Click to fly here</div>
                 </div>
@@ -1209,9 +1230,9 @@ const CMapsGlobe = (() => {
         // Cities layer hover + click
         let _cityClickConsumed = false;
 
-        map.on('mousemove', LAYERS.CITIES, (e) => handleCityHover(e, 'city'));
-        map.on('mouseleave', LAYERS.CITIES, handleCityLeave);
-        map.on('click', LAYERS.CITIES, (e) => {
+        map.on('mousemove', LAYERS.CITIES_DOT, (e) => handleCityHover(e, 'city'));
+        map.on('mouseleave', LAYERS.CITIES_DOT, handleCityLeave);
+        map.on('click', LAYERS.CITIES_DOT, (e) => {
             if (!e.features.length) return;
             _cityClickConsumed = true;
             const coords = e.features[0].geometry.coordinates;
@@ -1278,8 +1299,7 @@ const CMapsGlobe = (() => {
             window.dispatchEvent(new CustomEvent('cmaps:contextmenu', { detail }));
         });
 
-        // No zoomend data reload — all cities/capitals loaded at init
-        // Population-based opacity expressions handle progressive disclosure
+
     }
 
     function setCountryHoverState(countryId, isHovered) {
@@ -1436,7 +1456,7 @@ const CMapsGlobe = (() => {
             'lakes': [LAYERS.LAKES, LAYERS.LAKES + '-label'],
             'mountains': [LAYERS.MOUNTAINS, LAYERS.MOUNTAINS + '-label'],
             'mountain-ranges': [LAYERS.MOUNTAIN_RANGES, LAYERS.MOUNTAIN_RANGES + '-outline', LAYERS.MOUNTAIN_RANGES + '-label'],
-            'cities': [LAYERS.CITIES, LAYERS.CITIES + '-glow', LAYERS.CITIES_LABEL],
+            'cities': [LAYERS.CITIES_DOT, LAYERS.CITIES_LABEL],
             'regions': [LAYERS.REGIONS_BORDER],
             'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS + '-star', LAYERS.CAPITALS_LABEL, LAYERS.CAPITALS_LABEL + '-minor'],
             'urban-areas': [LAYERS.URBAN_FILL, LAYERS.URBAN_FILL + '-outline'],
