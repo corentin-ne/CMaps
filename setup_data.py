@@ -9,42 +9,106 @@ import json
 DATA_DIR = os.path.join(os.path.dirname(__file__), "static", "data")
 FLAGS_DIR = os.path.join(DATA_DIR, "flags")
 
-# Natural Earth data sources (GitHub raw URLs)
+# Base URL for Natural Earth raw GeoJSON files on GitHub
+_NE_BASE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
+
+# Natural Earth data sources — organised by resolution tier
+# 110m = low-res (globe overview), 50m = medium, 10m = high-detail
 DATASETS = {
+    # ── 110m ──────────────────────────────────────────────
     "countries_110m": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson",
+        "url": f"{_NE_BASE}/ne_110m_admin_0_countries.geojson",
         "filename": "ne_110m_admin_0_countries.geojson",
-        "description": "Country polygons (110m resolution)",
+        "description": "Country polygons (110m)",
     },
+    "rivers_110m": {
+        "url": f"{_NE_BASE}/ne_110m_rivers_lake_centerlines.geojson",
+        "filename": "ne_110m_rivers_lake_centerlines.geojson",
+        "description": "Rivers (110m)",
+    },
+    "lakes_110m": {
+        "url": f"{_NE_BASE}/ne_110m_lakes.geojson",
+        "filename": "ne_110m_lakes.geojson",
+        "description": "Lakes (110m)",
+    },
+
+    # ── 50m ───────────────────────────────────────────────
     "countries_50m": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson",
+        "url": f"{_NE_BASE}/ne_50m_admin_0_countries.geojson",
         "filename": "ne_50m_admin_0_countries.geojson",
-        "description": "Country polygons (50m resolution)",
+        "description": "Country polygons (50m)",
     },
+    "rivers_50m": {
+        "url": f"{_NE_BASE}/ne_50m_rivers_lake_centerlines.geojson",
+        "filename": "ne_50m_rivers_lake_centerlines.geojson",
+        "description": "Rivers (50m)",
+    },
+    "lakes_50m": {
+        "url": f"{_NE_BASE}/ne_50m_lakes.geojson",
+        "filename": "ne_50m_lakes.geojson",
+        "description": "Lakes (50m)",
+    },
+    "admin1_50m": {
+        "url": f"{_NE_BASE}/ne_50m_admin_1_states_provinces.geojson",
+        "filename": "ne_50m_admin_1_states_provinces.geojson",
+        "description": "Admin-1 regions/states (50m)",
+    },
+    "urban_50m": {
+        "url": f"{_NE_BASE}/ne_50m_urban_areas.geojson",
+        "filename": "ne_50m_urban_areas.geojson",
+        "description": "Urban areas (50m)",
+    },
+    "geography_marine_50m": {
+        "url": f"{_NE_BASE}/ne_50m_geography_marine_polys.geojson",
+        "filename": "ne_50m_geography_marine_polys.geojson",
+        "description": "Marine geography / seas (50m)",
+    },
+    "reefs_50m": {
+        "url": f"{_NE_BASE}/ne_10m_reefs.geojson",
+        "filename": "ne_10m_reefs.geojson",
+        "description": "Coral reefs (10m — no 50m available)",
+    },
+    "parks_50m": {
+        "url": f"{_NE_BASE}/ne_10m_parks_and_protected_lands_area.geojson",
+        "filename": "ne_10m_parks_and_protected_lands_area.geojson",
+        "description": "Parks & protected areas (10m — no 50m available)",
+    },
+    "populated_50m": {
+        "url": f"{_NE_BASE}/ne_50m_populated_places_simple.geojson",
+        "filename": "ne_50m_populated_places_simple.geojson",
+        "description": "Populated places (50m)",
+    },
+
+    # ── 10m ───────────────────────────────────────────────
     "regions": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson",
+        "url": f"{_NE_BASE}/ne_10m_admin_1_states_provinces.geojson",
         "filename": "ne_10m_admin_1_states_provinces.geojson",
         "description": "Admin-1 regions/states/provinces (10m)",
     },
-    "rivers": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_rivers_lake_centerlines.geojson",
+    "rivers_10m": {
+        "url": f"{_NE_BASE}/ne_10m_rivers_lake_centerlines.geojson",
         "filename": "ne_10m_rivers_lake_centerlines.geojson",
-        "description": "Major rivers (10m region)",
+        "description": "Major rivers (10m)",
     },
-    "lakes": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_lakes.geojson",
+    "lakes_10m": {
+        "url": f"{_NE_BASE}/ne_10m_lakes.geojson",
         "filename": "ne_10m_lakes.geojson",
-        "description": "Major lakes (10m region)",
+        "description": "Major lakes (10m)",
     },
     "cities": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson",
+        "url": f"{_NE_BASE}/ne_10m_populated_places_simple.geojson",
         "filename": "ne_10m_populated_places_simple.geojson",
-        "description": "Populated places (cities)",
+        "description": "Populated places / cities (10m)",
     },
     "mountains": {
-        "url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_geography_regions_elevation_points.geojson",
+        "url": f"{_NE_BASE}/ne_10m_geography_regions_elevation_points.geojson",
         "filename": "ne_10m_geography_regions_elevation_points.geojson",
-        "description": "Mountain/elevation points",
+        "description": "Mountain/elevation points (10m)",
+    },
+    "urban_10m": {
+        "url": f"{_NE_BASE}/ne_10m_urban_areas.geojson",
+        "filename": "ne_10m_urban_areas.geojson",
+        "description": "Urban areas (10m detail)",
     },
 }
 
@@ -101,6 +165,14 @@ def download_flags(countries_path: str) -> dict:
         iso_a2 = props.get("ISO_A2", props.get("iso_a2", ""))
         if iso_a2 and iso_a2 != "-99" and len(iso_a2) == 2:
             iso_codes.add(iso_a2.lower())
+        elif iso_a2 == "-99":
+            # Use ADM0_A3-based overrides for countries where NE has no ISO_A2
+            adm0 = props.get("ADM0_A3", "")
+            if adm0:
+                from services.data_loader import _KNOWN_ISO_OVERRIDES
+                override = _KNOWN_ISO_OVERRIDES.get(adm0)
+                if override:
+                    iso_codes.add(override[0].lower())
 
     print(f"  ↓ Downloading {len(iso_codes)} flag images from flagcdn.com...")
 
@@ -203,6 +275,7 @@ def _try_download_flag(code: str) -> bool:
 
 def fill_missing_flags(db) -> int:
     """Scan countries that have no flag_url and try to download their flags.
+    Uses multiple resolution strategies including sovereignty lookup.
     Returns the number of countries updated."""
     from database import Country
 
@@ -214,28 +287,47 @@ def fill_missing_flags(db) -> int:
         return 0
 
     print(f"  Filling missing flags for {len(missing)} countries...")
+
+    # Build a lookup: country name → ISO A2 for sovereignty-based resolution
+    all_countries = db.query(Country).all()
+    _name_to_iso = {}
+    for c in all_countries:
+        iso = (c.iso_code or '').lower()
+        if iso and len(iso) == 2 and not iso.startswith('x') and c.name:
+            _name_to_iso[c.name.lower()] = iso
+
     updated = 0
 
     for country in missing:
         iso2 = (country.iso_code or "").lower().strip()
         iso3 = (country.iso_a3 or "").upper().strip()
+        sov = (country.sovereignty or "").lower().strip()
 
         # Build ordered list of codes to try
         candidates = []
-        if iso2 and iso2 != "-99" and len(iso2) == 2:
+
+        # 1) Own ISO code (only if not synthetic X-prefix)
+        if iso2 and iso2 != "-99" and len(iso2) == 2 and not iso2.startswith('x'):
             candidates.append(iso2)
 
-        # ADM0_A3 lookup
+        # 2) ADM0_A3 lookup from hardcoded map
         mapped = _ADM0_A3_TO_FLAGCDN.get(iso3)
         if mapped is not None and mapped not in candidates:
             candidates.append(mapped)
         elif mapped is None and iso3 in _ADM0_A3_TO_FLAGCDN:
             continue  # Explicitly marked as "no flag" (Antarctica etc.)
 
-        # Truncated iso_a3 as last resort
+        # 3) Sovereignty-based: use the sovereign country's flag
+        #    e.g. France for French territories, Norway for Svalbard
+        if sov and sov in _name_to_iso:
+            sov_code = _name_to_iso[sov]
+            if sov_code not in candidates:
+                candidates.append(sov_code)
+
+        # 4) Truncated iso_a3 as last resort
         if iso3 and len(iso3) >= 2:
             fb = iso3[:2].lower()
-            if fb not in candidates:
+            if fb not in candidates and not fb.startswith('x'):
                 candidates.append(fb)
 
         for code in candidates:
@@ -309,16 +401,49 @@ def setup_data():
 
 
 def seed_flag_urls(db, flag_map: dict):
-    """Set flag_url on Country records using the downloaded flag images."""
+    """Set flag_url on Country records using the downloaded flag images.
+    Also resolves flags for territories via sovereignty lookup."""
     from database import Country
 
     countries = db.query(Country).all()
+
+    # Build name→iso lookup for sovereignty resolution
+    _name_to_iso = {}
+    for c in countries:
+        iso = (c.iso_code or "").lower()
+        if iso and len(iso) == 2 and not iso.startswith('x') and c.name:
+            _name_to_iso[c.name.lower()] = iso
+
     updated = 0
     for country in countries:
+        if country.flag_url:
+            continue  # already set
+
         iso = (country.iso_code or "").lower()
-        if iso and iso in flag_map and not country.flag_url:
+
+        # Direct match
+        if iso and iso in flag_map:
             country.flag_url = flag_map[iso]
             updated += 1
+            continue
+
+        # ADM0_A3 fallback
+        iso3 = (country.iso_a3 or "").upper()
+        mapped = _ADM0_A3_TO_FLAGCDN.get(iso3)
+        if mapped and mapped in flag_map:
+            country.flag_url = flag_map[mapped]
+            updated += 1
+            continue
+
+        # Sovereignty fallback (e.g. France for French territories)
+        sov = (country.sovereignty or "").lower()
+        if sov and sov in _name_to_iso:
+            sov_code = _name_to_iso[sov]
+            if sov_code in flag_map:
+                country.flag_url = flag_map[sov_code]
+                updated += 1
+                continue
+
     db.commit()
     print(f"  ✓ Set flag_url on {updated} countries.")
 

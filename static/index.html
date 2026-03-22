@@ -21,7 +21,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- App CSS -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=2">
 </head>
 <body>
     <!-- ═══════════ TOP BAR ═══════════ -->
@@ -180,6 +180,34 @@
                 <input type="checkbox" data-layer="cities" checked>
                 <span class="layer-swatch" style="background: #ffd700"></span>
                 <span class="layer-name">Cities</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="urban-areas" checked>
+                <span class="layer-swatch" style="background: #f59e0b"></span>
+                <span class="layer-name">Urban Areas</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="reefs" checked>
+                <span class="layer-swatch" style="background: #06b6d4"></span>
+                <span class="layer-name">Reefs</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="parks" checked>
+                <span class="layer-swatch" style="background: #22c55e; border-style: dashed"></span>
+                <span class="layer-name">Parks &amp; Protected</span>
+            </label>
+
+            <div class="layer-toggle-divider"></div>
+
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="coastal-waves" checked>
+                <span class="layer-swatch layer-swatch-wave"></span>
+                <span class="layer-name">Coastal Waves</span>
+            </label>
+            <label class="layer-toggle-row">
+                <input type="checkbox" data-layer="auto-rotate">
+                <span class="layer-swatch" style="background: transparent; border: 1.5px dashed rgba(255,255,255,0.3)">↻</span>
+                <span class="layer-name">Auto-Rotate Globe</span>
             </label>
         </div>
     </div>
@@ -532,8 +560,8 @@
 
     <!-- Application Scripts -->
     <script src="/static/js/utils.js?v=3"></script>
-    <script src="/static/js/globe.js?v=10"></script>
-    <script src="/static/js/panels.js?v=4"></script>
+    <script src="/static/js/globe.js?v=12"></script>
+    <script src="/static/js/panels.js?v=5"></script>
     <script src="/static/js/search.js?v=4"></script>
     <script src="/static/js/editor.js?v=6"></script>
     <script src="/static/js/history.js?v=2"></script>

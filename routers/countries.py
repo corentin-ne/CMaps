@@ -17,6 +17,7 @@ from services.validators import (
     validate_name, validate_color, ValidationError
 )
 from services.aggregation import recalculate_country
+from services.data_loader import resolve_iso_codes, _generate_synthetic_iso
 
 router = APIRouter(prefix="/api/countries", tags=["countries"])
 
@@ -117,8 +118,20 @@ def create_country(data: CountryCreate, db: Session = Depends(get_db)):
 
     area = calculate_area_km2(data.geometry)
 
+    # Generate a synthetic ISO code for custom countries
+    iso_a2, iso_a3 = _generate_synthetic_iso(data.name, "")
+    # Ensure uniqueness — bump if already taken
+    existing = db.query(Country).filter(Country.iso_code == iso_a2).first()
+    suffix = 0
+    while existing:
+        suffix += 1
+        iso_a2 = f"X{chr(65 + (suffix % 26))}"
+        existing = db.query(Country).filter(Country.iso_code == iso_a2).first()
+
     country = Country(
         name=data.name,
+        iso_code=iso_a2,
+        iso_a3=iso_a3,
         geometry=json.dumps(data.geometry),
         population=pop,
         area_km2=area,

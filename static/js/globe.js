@@ -13,6 +13,18 @@ const CMapsGlobe = (() => {
     let popup = null;
     let currentCountryResolution = '110m'; // Track which resolution is loaded
 
+    // Track current data scale per layer for scale-dependent switching
+    let _currentScale = { rivers: null, lakes: null, urban: null };
+
+    // ── Animation state ──
+    let _animFrame = null;
+    let _animLastTick = 0;
+    const _ANIM_INTERVAL = 80; // ~12 fps for paint property updates
+    let _wavesEnabled = true;
+    let _idleTimer = null;
+    let _autoRotate = false;
+    let _userInteracting = false;
+
     const LAYERS = {
         COUNTRY_FILL: 'country-fill',
         COUNTRY_BORDER: 'country-border',
@@ -33,6 +45,14 @@ const CMapsGlobe = (() => {
         MOUNTAIN_RANGES: 'mountain-ranges-fill',
         SKY: 'sky-atmosphere',
         UNCLAIMED_PATTERN: 'unclaimed-pattern',
+        // New layers
+        URBAN_FILL: 'urban-areas-fill',
+        REEFS_LINE: 'reefs-line',
+        PARKS_FILL: 'parks-fill',
+        // Animated coastal wave glow
+        COASTAL_WAVE_1: 'coastal-wave-1',
+        COASTAL_WAVE_2: 'coastal-wave-2',
+        COASTAL_WAVE_3: 'coastal-wave-3',
     };
 
     // Zoom thresholds for data resolution switching
@@ -41,6 +61,13 @@ const CMapsGlobe = (() => {
         MED: 5,     // 3-5: 50m data
         HIGH: 5,    // Above: 10m data (regions)
     };
+
+    /** Convert current zoom to scale string for API calls */
+    function _zoomToScale(zoom) {
+        if (zoom < ZOOM_THRESHOLDS.LOW) return '110';
+        if (zoom < ZOOM_THRESHOLDS.MED) return '50';
+        return '10';
+    }
 
     /**
      * Initialize the MapLibre GL globe.
@@ -129,16 +156,27 @@ const CMapsGlobe = (() => {
             if (lowPoly) addLowPolyLayer(lowPoly);
 
             addCountryLayers(countriesData);
+            _addCoastalWaveLayers();
 
-            const [rivers, lakes, mountains, mountainRanges, cities, regions, capitals] = await Promise.all([
-                CMapsUtils.api('/api/features/rivers').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/features/lakes').catch(() => ({ type: 'FeatureCollection', features: [] })),
+            // Initial zoom for scale-dependent loading
+            const initZoom = map.getZoom();
+
+            const [rivers, lakes, mountains, mountainRanges, cities, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
+                CMapsUtils.api(`/api/features/rivers?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api(`/api/features/lakes?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountains').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountain-ranges').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/cities?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/regions/geojson').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/capitals?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api(`/api/features/urban-areas?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api('/api/features/reefs').catch(() => ({ type: 'FeatureCollection', features: [] })),
+                CMapsUtils.api('/api/features/parks').catch(() => ({ type: 'FeatureCollection', features: [] })),
             ]);
+
+            _currentScale.rivers = _zoomToScale(initZoom);
+            _currentScale.lakes = _zoomToScale(initZoom);
+            _currentScale.urban = _zoomToScale(initZoom);
 
             addRiversLayer(rivers);
             addLakesLayer(lakes);
@@ -158,6 +196,15 @@ const CMapsGlobe = (() => {
             addRegionsLayer(regionsData);
             addCitiesLayer(cities);
             addCapitalsLayer(capitals);
+            addUrbanAreasLayer(urbanAreas);
+            addReefsLayer(reefs);
+            addParksLayer(parks);
+
+            // Start ambient map animations (coastal waves, capital pulse, etc.)
+            _startAnimations();
+
+            // Set up scale-dependent data switching on zoom change
+            _setupScaleSwitching();
 
             const count = countriesData.features?.length || 0;
             document.getElementById('country-count').textContent = `${count} countries`;
@@ -167,6 +214,223 @@ const CMapsGlobe = (() => {
             console.error('Failed to load layers:', error);
             CMapsUtils.toast('Failed to load map data. Check server connection.', 'error');
         }
+    }
+
+    /**
+     * Scale-dependent data switching — reload river/lake/urban data
+     * when crossing zoom thresholds (110m ↔ 50m ↔ 10m).
+     */
+    let _scaleUpdatePending = false;
+    function _setupScaleSwitching() {
+        map.on('zoomend', CMapsUtils.debounce(async () => {
+            if (_scaleUpdatePending) return;
+            const zoom = map.getZoom();
+            const newScale = _zoomToScale(zoom);
+
+            // Only reload if the scale tier changed
+            const needsRivers = newScale !== _currentScale.rivers;
+            const needsLakes = newScale !== _currentScale.lakes;
+            const needsUrban = newScale !== _currentScale.urban;
+
+            if (!needsRivers && !needsLakes && !needsUrban) return;
+
+            _scaleUpdatePending = true;
+            try {
+                const fetches = [];
+
+                if (needsRivers) {
+                    fetches.push(
+                        CMapsUtils.api(`/api/features/rivers?zoom=${zoom}`)
+                            .then(data => {
+                                const src = map.getSource('rivers');
+                                if (src) src.setData(data);
+                                _currentScale.rivers = newScale;
+                            }).catch(() => {})
+                    );
+                }
+                if (needsLakes) {
+                    fetches.push(
+                        CMapsUtils.api(`/api/features/lakes?zoom=${zoom}`)
+                            .then(data => {
+                                const src = map.getSource('lakes');
+                                if (src) src.setData(data);
+                                _currentScale.lakes = newScale;
+                            }).catch(() => {})
+                    );
+                }
+                if (needsUrban) {
+                    fetches.push(
+                        CMapsUtils.api(`/api/features/urban-areas?zoom=${zoom}`)
+                            .then(data => {
+                                const src = map.getSource('urban-areas');
+                                if (src) src.setData(data);
+                                _currentScale.urban = newScale;
+                            }).catch(() => {})
+                    );
+                }
+
+                await Promise.all(fetches);
+            } finally {
+                _scaleUpdatePending = false;
+            }
+        }, 300));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  AMBIENT ANIMATIONS: Coastal waves, capital pulse, etc.
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Add 3 concentric glow line layers on country borders.
+     * Creates a soft, pulsing coastal-wave shimmer at globe zoom levels.
+     */
+    function _addCoastalWaveLayers() {
+        // Wave 1: tight bright inner glow — most visible
+        map.addLayer({
+            id: LAYERS.COASTAL_WAVE_1,
+            type: 'line',
+            source: 'countries',
+            paint: {
+                'line-color': '#67e8f9',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 1.2, 3, 2.5, 8, 4],
+                'line-opacity': 0.45,
+                'line-blur': 1.5,
+                'line-dasharray': [4, 3],
+            },
+        }, LAYERS.COUNTRY_BORDER);
+
+        // Wave 2: medium spread
+        map.addLayer({
+            id: LAYERS.COASTAL_WAVE_2,
+            type: 'line',
+            source: 'countries',
+            paint: {
+                'line-color': '#22d3ee',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 3, 3, 5, 8, 8],
+                'line-opacity': 0.22,
+                'line-blur': 3,
+                'line-dasharray': [6, 4],
+            },
+        }, LAYERS.COUNTRY_BORDER);
+
+        // Wave 3: wide outer halo
+        map.addLayer({
+            id: LAYERS.COASTAL_WAVE_3,
+            type: 'line',
+            source: 'countries',
+            paint: {
+                'line-color': '#06b6d4',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 0, 5, 3, 9, 8, 14],
+                'line-opacity': 0.10,
+                'line-blur': 6,
+            },
+        }, LAYERS.COUNTRY_BORDER);
+    }
+
+    /** Kick off the master animation loop + idle rotation tracking. */
+    function _startAnimations() {
+        _animLastTick = 0;
+        _animFrame = requestAnimationFrame(_animLoop);
+        _setupIdleRotation();
+    }
+
+    /** Master RAF loop — throttled to ~12 fps for paint updates. */
+    function _animLoop(timestamp) {
+        _animFrame = requestAnimationFrame(_animLoop);
+
+        if (timestamp - _animLastTick < _ANIM_INTERVAL) return;
+        _animLastTick = timestamp;
+
+        const t = timestamp / 1000; // elapsed seconds
+
+        if (_wavesEnabled) _updateCoastalWaves(t);
+        _updateCapitalPulse(t);
+        _updateOceanBreathing(t);
+
+        if (_autoRotate && !_userInteracting) {
+            _tickAutoRotation();
+        }
+    }
+
+    /** Animated coastal wave glow — pulsing opacity + drifting translate for movement. */
+    function _updateCoastalWaves(t) {
+        if (!map.getLayer(LAYERS.COASTAL_WAVE_1)) return;
+
+        const zoom = map.getZoom();
+        // Fade out at high zoom (inland borders visible, glow looks wrong)
+        const zoomFade = zoom < 5 ? 1.0 : zoom < 9 ? (9 - zoom) / 4 : 0;
+        if (zoomFade <= 0.01) return;
+
+        // Slow phase — ~9 second full cycle
+        const phase = t * 0.7;
+
+        // Opacity pulses — clearly visible range
+        const o1 = (0.35 + 0.15 * Math.sin(phase))          * zoomFade;
+        const o2 = (0.18 + 0.10 * Math.sin(phase - 1.2))    * zoomFade;
+        const o3 = (0.08 + 0.05 * Math.sin(phase - 2.4))    * zoomFade;
+
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_1, 'line-opacity', o1);
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-opacity', o2);
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_3, 'line-opacity', o3);
+
+        // Width breathing — inner wave pulses width gently
+        const wPulse = 0.9 + 0.2 * Math.sin(phase * 1.1);
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-blur', 2.5 + 1.5 * Math.sin(phase - 0.8));
+
+        // Translate drift — gives illusion of outward wave movement
+        const drift = Math.sin(phase * 0.5) * 1.2;
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_2, 'line-translate', [drift, drift * 0.5]);
+        map.setPaintProperty(LAYERS.COASTAL_WAVE_3, 'line-translate', [drift * 1.8, drift * 0.9]);
+    }
+
+    /** Breathing halo on capital cities — slow pulse. */
+    function _updateCapitalPulse(t) {
+        const haloId = LAYERS.CAPITALS + '-halo';
+        if (!map.getLayer(haloId)) return;
+
+        // ~7-second cycle, range 0.10 – 1.0
+        const pulse = 0.55 + 0.45 * Math.sin(t * 0.9);
+        map.setPaintProperty(haloId, 'circle-opacity', pulse);
+    }
+
+    /** Very subtle ocean background colour cycling. */
+    function _updateOceanBreathing(t) {
+        // Oscillate the blue channel slightly: #0d1b2a ↔ #0e1d30
+        const shift = 0.5 + 0.5 * Math.sin(t * 0.3); // ~21-second cycle
+        const r = 13;
+        const g = Math.round(27 + shift * 2);  // 27-29
+        const b = Math.round(42 + shift * 6);  // 42-48
+        map.setPaintProperty('background', 'background-color', `rgb(${r},${g},${b})`);
+    }
+
+    /** Track user interaction and start slow auto-rotation after idle. */
+    function _setupIdleRotation() {
+        const resetIdle = () => {
+            _autoRotate = false;
+            _userInteracting = true;
+            clearTimeout(_idleTimer);
+            _idleTimer = setTimeout(() => {
+                _userInteracting = false;
+                if (map.getZoom() < 4) _autoRotate = true;
+            }, 45000); // 45 s idle
+        };
+
+        map.on('mousedown', resetIdle);
+        map.on('touchstart', resetIdle);
+        map.on('wheel', resetIdle);
+        map.on('movestart', () => { if (!_autoRotate) _userInteracting = true; });
+        map.on('moveend', () => { _userInteracting = false; });
+
+        // Initial idle timer
+        _idleTimer = setTimeout(() => {
+            if (map.getZoom() < 4) _autoRotate = true;
+        }, 45000);
+    }
+
+    /** Nudge globe eastward — ~0.14°/s ≈ full rotation in ~43 min. */
+    function _tickAutoRotation() {
+        const center = map.getCenter();
+        map.setCenter([center.lng + 0.012, center.lat]);
     }
 
     /**
@@ -848,6 +1112,121 @@ const CMapsGlobe = (() => {
         });
     }
 
+    // ═══════════════════════════════════════════════════════
+    //  NEW LAYERS: Urban Areas, Reefs, Parks
+    // ═══════════════════════════════════════════════════════
+
+    function addUrbanAreasLayer(geojson) {
+        map.addSource('urban-areas', { type: 'geojson', data: geojson, tolerance: 0.6 });
+        map.addLayer({
+            id: LAYERS.URBAN_FILL,
+            type: 'fill',
+            source: 'urban-areas',
+            paint: {
+                'fill-color': '#f59e0b',
+                'fill-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    3, 0.05,
+                    6, 0.15,
+                    10, 0.25,
+                ],
+            },
+            minzoom: 4,
+        });
+        map.addLayer({
+            id: LAYERS.URBAN_FILL + '-outline',
+            type: 'line',
+            source: 'urban-areas',
+            paint: {
+                'line-color': 'rgba(245, 158, 11, 0.4)',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.3, 10, 1],
+            },
+            minzoom: 5,
+        });
+    }
+
+    function addReefsLayer(geojson) {
+        if (!geojson.features || geojson.features.length === 0) return;
+        map.addSource('reefs', { type: 'geojson', data: geojson, tolerance: 0.5 });
+        map.addLayer({
+            id: LAYERS.REEFS_LINE,
+            type: 'line',
+            source: 'reefs',
+            paint: {
+                'line-color': '#06b6d4',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 3],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.4, 6, 0.7, 10, 0.9],
+            },
+            minzoom: 3,
+        });
+        // Reef label
+        map.addLayer({
+            id: LAYERS.REEFS_LINE + '-label',
+            type: 'symbol',
+            source: 'reefs',
+            layout: {
+                'symbol-placement': 'line',
+                'text-field': ['get', 'name'],
+                'text-size': 10,
+                'text-optional': true,
+            },
+            paint: {
+                'text-color': '#67e8f9',
+                'text-halo-color': 'rgba(0,0,0,0.7)',
+                'text-halo-width': 1,
+            },
+            minzoom: 6,
+        });
+    }
+
+    function addParksLayer(geojson) {
+        if (!geojson.features || geojson.features.length === 0) return;
+        map.addSource('parks', { type: 'geojson', data: geojson, tolerance: 0.6 });
+        map.addLayer({
+            id: LAYERS.PARKS_FILL,
+            type: 'fill',
+            source: 'parks',
+            paint: {
+                'fill-color': '#22c55e',
+                'fill-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    4, 0.08,
+                    7, 0.18,
+                    10, 0.28,
+                ],
+            },
+            minzoom: 4,
+        });
+        map.addLayer({
+            id: LAYERS.PARKS_FILL + '-outline',
+            type: 'line',
+            source: 'parks',
+            paint: {
+                'line-color': 'rgba(34, 197, 94, 0.5)',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.3, 10, 1.2],
+                'line-dasharray': [3, 2],
+            },
+            minzoom: 5,
+        });
+        map.addLayer({
+            id: LAYERS.PARKS_FILL + '-label',
+            type: 'symbol',
+            source: 'parks',
+            layout: {
+                'text-field': ['get', 'name'],
+                'text-size': ['interpolate', ['linear'], ['zoom'], 5, 9, 10, 12],
+                'text-optional': true,
+                'text-max-width': 8,
+            },
+            paint: {
+                'text-color': '#86efac',
+                'text-halo-color': 'rgba(0,0,0,0.8)',
+                'text-halo-width': 1.2,
+            },
+            minzoom: 7,
+        });
+    }
+
     function setupInteractions() {
         const handleHover = (e, sourceName) => {
             if (e.features.length === 0) return;
@@ -871,12 +1250,14 @@ const CMapsGlobe = (() => {
 
             const props = feature.properties;
             const isoCode = (props.iso_code || '').toLowerCase();
+            // Only build a local path for real 2-letter ISO codes (skip synthetic X-prefix)
             const flagSrc = props.flag_url
-                || (isoCode && isoCode.length === 2 && isoCode !== '-99'
+                || (isoCode && isoCode.length === 2 && isoCode !== '-99' && !isoCode.startsWith('x')
                     ? `/static/data/flags/${isoCode}.png` : null);
+            const emojiFallback = props.flag_emoji || '🏳️';
             const flagHtml = flagSrc
-                ? `<img src="${flagSrc}" alt="" class="country-popup-flag">`
-                : `<span>${props.flag_emoji || '🏳️'}</span>`;
+                ? `<img src="${flagSrc}" alt="" class="country-popup-flag" onerror="this.outerHTML='<span>'+decodeURIComponent('${encodeURIComponent(emojiFallback)}')+'</span>'">`
+                : `<span>${emojiFallback}</span>`;
             const popupContent = `
                 <div class="country-popup">
                     <div class="country-popup-name">
@@ -1169,7 +1550,24 @@ const CMapsGlobe = (() => {
             'cities': [LAYERS.CITIES, LAYERS.CITIES + '-glow', LAYERS.CITIES_LABEL],
             'regions': [LAYERS.REGIONS_BORDER],
             'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS_LABEL],
+            'urban-areas': [LAYERS.URBAN_FILL, LAYERS.URBAN_FILL + '-outline'],
+            'reefs': [LAYERS.REEFS_LINE, LAYERS.REEFS_LINE + '-label'],
+            'parks': [LAYERS.PARKS_FILL, LAYERS.PARKS_FILL + '-outline', LAYERS.PARKS_FILL + '-label'],
+            'coastal-waves': [LAYERS.COASTAL_WAVE_1, LAYERS.COASTAL_WAVE_2, LAYERS.COASTAL_WAVE_3],
         };
+
+        // Pause / resume wave animation when toggled
+        if (layerKey === 'coastal-waves') _wavesEnabled = visible;
+
+        // Auto-rotate toggle
+        if (layerKey === 'auto-rotate') {
+            if (visible) {
+                _autoRotate = map.getZoom() < 4;
+            } else {
+                _autoRotate = false;
+            }
+            return; // no GL layers to toggle
+        }
 
         const layers = layerMap[layerKey] || [];
         for (const layerId of layers) {

@@ -1,11 +1,13 @@
 """
-CMaps Features Router — Natural features (rivers, mountains, lakes, mountain ranges).
+CMaps Features Router — Natural features with scale-dependent rendering.
+Serves rivers, lakes, mountains, mountain ranges, reefs, urban areas, and parks
+at the appropriate resolution (110m / 50m / 10m) based on the current zoom level.
 """
 import json
 import math
 import os
 from functools import lru_cache
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, JSONResponse
 
 router = APIRouter(prefix="/api/features", tags=["features"])
@@ -15,26 +17,119 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "d
 # ── In-memory cache for expensive computed layers ──
 _cache: dict = {}
 
+# ── Resolution file map ──
+# For each layer we map scale → filename. Keys are "110", "50", "10".
+_SCALE_FILES = {
+    "rivers": {
+        "110": "ne_110m_rivers_lake_centerlines.geojson",
+        "50":  "ne_50m_rivers_lake_centerlines.geojson",
+        "10":  "ne_10m_rivers_lake_centerlines.geojson",
+    },
+    "lakes": {
+        "110": "ne_110m_lakes.geojson",
+        "50":  "ne_50m_lakes.geojson",
+        "10":  "ne_10m_lakes.geojson",
+    },
+    "urban": {
+        "50":  "ne_50m_urban_areas.geojson",
+        "10":  "ne_10m_urban_areas.geojson",
+    },
+    "reefs": {
+        "10":  "ne_10m_reefs.geojson",
+    },
+    "parks": {
+        "10":  "ne_10m_parks_and_protected_lands_area.geojson",
+    },
+}
+
+# Zoom breakpoints: zoom < 3 → 110m, zoom < 5 → 50m, else 10m
+def _zoom_to_scale(zoom: float) -> str:
+    if zoom < 3:
+        return "110"
+    elif zoom < 5:
+        return "50"
+    return "10"
+
+
+def _best_file(layer: str, scale: str) -> str:
+    """Pick the best available file for a layer & scale, falling back to coarser data."""
+    files = _SCALE_FILES.get(layer, {})
+    for s in (scale, "50", "10", "110"):
+        if s in files:
+            return files[s]
+    return ""
+
 
 def _load_geojson(filename: str) -> dict:
     """Load a GeoJSON file from the data directory."""
+    if not filename:
+        return {"type": "FeatureCollection", "features": []}
     filepath = os.path.join(DATA_DIR, filename)
     if not os.path.exists(filepath):
         return {"type": "FeatureCollection", "features": []}
+    cache_key = f"file:{filename}"
+    if cache_key in _cache:
+        return _cache[cache_key]
     with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    _cache[cache_key] = data
+    return data
 
+
+# ═══════════════════════════════════════════════════════════
+#  SCALE-DEPENDENT ENDPOINTS
+# ═══════════════════════════════════════════════════════════
 
 @router.get("/rivers")
-def get_rivers():
-    """Get river lines GeoJSON."""
-    return _load_geojson("ne_10m_rivers_lake_centerlines.geojson")
+def get_rivers(zoom: float = Query(0, description="Current map zoom")):
+    """Get river lines GeoJSON at the appropriate resolution."""
+    scale = _zoom_to_scale(zoom)
+    return _load_geojson(_best_file("rivers", scale))
 
 
 @router.get("/lakes")
-def get_lakes():
-    """Get lake polygons GeoJSON."""
-    return _load_geojson("ne_10m_lakes.geojson")
+def get_lakes(zoom: float = Query(0, description="Current map zoom")):
+    """Get lake polygons GeoJSON at the appropriate resolution."""
+    scale = _zoom_to_scale(zoom)
+    return _load_geojson(_best_file("lakes", scale))
+
+
+@router.get("/urban-areas")
+def get_urban_areas(zoom: float = Query(0, description="Current map zoom")):
+    """Get urban area polygons at appropriate resolution."""
+    scale = _zoom_to_scale(zoom)
+    return _load_geojson(_best_file("urban", scale))
+
+
+@router.get("/reefs")
+def get_reefs():
+    """Get coral reef lines/polygons (10m only)."""
+    return _load_geojson(_best_file("reefs", "10"))
+
+
+@router.get("/parks")
+def get_parks():
+    """Get parks and protected areas polygons (10m only)."""
+    raw = _load_geojson(_best_file("parks", "10"))
+    cache_key = "parks_normalized"
+    if cache_key in _cache:
+        return _cache[cache_key]
+    # Normalize useful properties (build a clean copy)
+    features = []
+    for f in (raw.get("features") or []):
+        props = f.get("properties", {})
+        features.append({
+            "type": "Feature",
+            "geometry": f.get("geometry"),
+            "properties": {
+                "name": props.get("name", props.get("unit_name", props.get("NAME", ""))),
+                "nps_region": props.get("nps_region", ""),
+                "unit_type": props.get("unit_type", props.get("desig_eng", "")),
+            }
+        })
+    result = {"type": "FeatureCollection", "features": features}
+    _cache[cache_key] = result
+    return result
 
 
 @router.get("/mountains")

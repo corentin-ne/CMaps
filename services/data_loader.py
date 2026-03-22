@@ -1,9 +1,11 @@
 """
 CMaps Data Loader — Loads Natural Earth data into the database.
 Handles countries, regions (admin level 1), and capitals.
+Ensures every country is linked to a robust ISO code.
 """
 import json
 import os
+import hashlib
 from sqlalchemy.orm import Session
 from database import Country, Region, Capital
 from services.geo_utils import generate_color, calculate_area_km2
@@ -22,6 +24,93 @@ def iso_to_flag(iso_a2: str) -> str:
                 chr(0x1F1E6 + ord(iso_a2[1].upper()) - ord('A')))
     except Exception:
         return "🏳️"
+
+
+# ═══════════════════════════════════════════════════════
+#  ISO-CODE HELPER — guarantees every country has a code
+# ═══════════════════════════════════════════════════════
+
+# Hard-coded mappings for entities Natural Earth marks as -99
+_KNOWN_ISO_OVERRIDES = {
+    # ADM0_A3 → (iso_a2, iso_a3)
+    "FRA": ("FR", "FRA"),  # France  (ISO_A2='-99' in NE 50m/110m)
+    "NOR": ("NO", "NOR"),  # Norway  (ISO_A2='-99' in NE 50m/110m)
+    "KOS": ("XK", "XKX"),  # Kosovo
+    "TWN": ("TW", "TWN"),  # Taiwan
+    "ESH": ("EH", "ESH"),  # Western Sahara
+    "PSX": ("PS", "PSE"),  # Palestine
+    "GAZ": ("PS", "PSE"),  # Gaza Strip → Palestine
+    "WEB": ("PS", "PSE"),  # West Bank → Palestine
+    "CYN": ("CY", "CYP"),  # Northern Cyprus → Cyprus (de-jure)
+    "SOL": ("SO", "SOM"),  # Somaliland → Somalia (de-jure)
+    "SDS": ("SS", "SSD"),  # South Sudan
+    "SAH": ("EH", "ESH"),  # Sahrawi Republic → Western Sahara
+    "SCR": ("FR", "FRA"),  # Scattered Islands → France
+    "BJN": ("BJ", "BJN"),  # Bajo Nuevo Bank
+    "SER": ("RS", "SRB"),  # Serranilla Bank
+    "USG": ("US", "USA"),  # USNB Guantanamo Bay
+    "ATC": ("AU", "AUS"),  # Ashmore and Cartier Islands
+    "IOA": ("AU", "AUS"),  # Australian Indian Ocean Territories
+    "KAS": ("IN", "IND"),  # Siachen Glacier (admin India)
+    "CNM": ("CY", "CYP"),  # Cyprus UNMIK zone
+    "CSI": ("FR", "FRA"),  # Coral Sea Islands → France/Australia
+    "ALD": ("FI", "FIN"),  # Aland → Finland
+    "CLP": ("FR", "FRA"),  # Clipperton Island → France
+    "HKG": ("HK", "HKG"),  # Hong Kong
+    "MAC": ("MO", "MAC"),  # Macao
+}
+
+
+def _generate_synthetic_iso(name: str, adm0_a3: str) -> tuple:
+    """Generate a deterministic synthetic ISO code for an entity without one.
+    Returns (iso_a2, iso_a3). Codes start with 'X' to avoid clashing with real ISO."""
+    base = adm0_a3 if adm0_a3 and adm0_a3 != "-99" else name[:3].upper()
+    # Create a short hash to avoid collisions
+    h = hashlib.md5(name.encode()).hexdigest()[:4].upper()
+    iso_a2 = f"X{h[0]}"
+    iso_a3 = f"X{base[:2]}"
+    return iso_a2, iso_a3
+
+
+def resolve_iso_codes(props: dict) -> tuple:
+    """
+    Given a Natural Earth properties dict, resolve the best (iso_a2, iso_a3) tuple.
+    Always returns non-None values — generates synthetic codes when needed.
+    """
+    iso_a2 = props.get("ISO_A2", props.get("iso_a2", ""))
+    iso_a3 = props.get("ISO_A3", props.get("iso_a3", ""))
+    adm0_a3 = props.get("ADM0_A3", props.get("adm0_a3", ""))
+    name = props.get("NAME", props.get("name", "Unknown"))
+
+    # Step 1: valid standard ISO codes
+    valid_a2 = iso_a2 and iso_a2 != "-99" and len(iso_a2) == 2
+    valid_a3 = iso_a3 and iso_a3 != "-99" and len(iso_a3) == 3
+
+    # Step 2: override lookup from our hard-coded table
+    if not valid_a2 or not valid_a3:
+        key = adm0_a3 if adm0_a3 and adm0_a3 != "-99" else None
+        if key and key in _KNOWN_ISO_OVERRIDES:
+            override = _KNOWN_ISO_OVERRIDES[key]
+            if not valid_a2:
+                iso_a2 = override[0]
+                valid_a2 = True
+            if not valid_a3:
+                iso_a3 = override[1]
+                valid_a3 = True
+
+    # Step 3: derive A2 from A3 or vice versa
+    if valid_a3 and not valid_a2:
+        iso_a2 = iso_a3[:2]
+        valid_a2 = True
+    if valid_a2 and not valid_a3:
+        iso_a3 = adm0_a3 if adm0_a3 and adm0_a3 != "-99" else (iso_a2 + iso_a2[0])
+        valid_a3 = True
+
+    # Step 4: last resort — generate synthetic code
+    if not valid_a2 or not valid_a3:
+        iso_a2, iso_a3 = _generate_synthetic_iso(name, adm0_a3)
+
+    return iso_a2.upper(), iso_a3.upper()
 
 
 # ═══════════════════════════════════════════════════════
@@ -44,6 +133,9 @@ def load_countries(db: Session, geojson_path: str):
     features = data.get("features", [])
     print(f"  Loading {len(features)} countries...")
 
+    # Track which ISO A2 codes we've used to avoid duplicate key violations
+    _used_iso_a2 = set()
+
     for feature in features:
         props = feature.get("properties", {})
         geometry = feature.get("geometry")
@@ -52,18 +144,24 @@ def load_countries(db: Session, geojson_path: str):
             continue
 
         name = props.get("NAME", props.get("name", "Unknown"))
-        iso_a2 = props.get("ISO_A2", props.get("iso_a2", ""))
-        iso_a3 = props.get("ISO_A3", props.get("iso_a3", ""))
         adm0_a3 = props.get("ADM0_A3", props.get("adm0_a3", ""))
 
         if name in ("Unknown", "") or not geometry.get("coordinates"):
             continue
 
-        iso_code = (iso_a2 if iso_a2 and iso_a2 != "-99"
-                    else (iso_a3[:2] if iso_a3 and iso_a3 != "-99" else None))
+        # Robust ISO resolution — every country gets a code
+        iso_a2, iso_a3 = resolve_iso_codes(props)
 
-        # Build a robust 3-letter code fallback
-        final_iso_a3 = iso_a3 if iso_a3 and iso_a3 != "-99" else adm0_a3
+        # Ensure uniqueness of iso_a2 (used as iso_code primary key)
+        if iso_a2 in _used_iso_a2:
+            # Append a suffix derived from the name to make it unique
+            h = hashlib.md5(name.encode()).hexdigest()[:2].upper()
+            iso_a2 = f"X{h[0]}"
+            attempt = 0
+            while iso_a2 in _used_iso_a2:
+                attempt += 1
+                iso_a2 = f"X{chr(65 + (attempt % 26))}"
+        _used_iso_a2.add(iso_a2)
 
         population = int(props.get("POP_EST", props.get("pop_est", 0)) or 0)
         area_km2 = float(props.get("AREA_KM2", 0) or 0)
@@ -84,13 +182,13 @@ def load_countries(db: Session, geojson_path: str):
 
         country = Country(
             name=name,
-            iso_code=iso_code,
-            iso_a3=final_iso_a3 if final_iso_a3 and final_iso_a3 != "-99" else None,
+            iso_code=iso_a2,
+            iso_a3=iso_a3,
             geometry=json.dumps(geometry),
             population=population,
             area_km2=area_km2,
             capital=capital_name,
-            flag_emoji=iso_to_flag(iso_a2) if iso_a2 else "🏳️",
+            flag_emoji=iso_to_flag(iso_a2),
             color=generate_color(),
             continent=continent,
             subregion=subregion,

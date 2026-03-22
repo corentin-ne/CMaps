@@ -632,6 +632,35 @@ input, button, select, textarea {
     color: var(--text-muted);
 }
 
+/* ── Divider between data layers and effects ── */
+.layer-toggle-divider {
+    height: 1px;
+    margin: var(--space-xs) var(--space-md);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Animated wave swatch (miniature version of the map effect) ── */
+.layer-swatch-wave {
+    background: linear-gradient(135deg, #00acc1, #4dd0e1);
+    position: relative;
+    overflow: hidden;
+}
+.layer-swatch-wave::after {
+    content: '';
+    position: absolute;
+    inset: -50%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0deg,
+        rgba(255, 255, 255, 0.45) 60deg,
+        transparent 120deg
+    );
+    animation: swatchSpin 3s linear infinite;
+}
+@keyframes swatchSpin {
+    to { transform: rotate(360deg); }
+}
+
 /* ═══════════════════════════════════════════════════════════
    MAP CONTAINER & 3D GLOBE SPACE
    ═══════════════════════════════════════════════════════════ */
@@ -671,9 +700,30 @@ input, button, select, textarea {
 }
 
 #map {
+    position: relative;
     width: 100%;
     height: 100%;
     background: transparent !important; /* Forces MapLibre background to hide */
+}
+
+/* ── Atmospheric vignette — subtle dark rim around the globe ── */
+#map::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: radial-gradient(
+        ellipse 70% 70% at 50% 48%,
+        transparent 55%,
+        rgba(5, 10, 18, 0.25) 80%,
+        rgba(2, 5, 10, 0.55) 100%
+    );
+    animation: atmospherePulse 10s ease-in-out infinite;
+}
+@keyframes atmospherePulse {
+    0%, 100% { opacity: 0.65; }
+    50%      { opacity: 1; }
 }
 
 /* MapLibre Controls for Dark Mode */

@@ -65,7 +65,8 @@ const CMapsPanel = (() => {
         const flagEl = document.getElementById('country-flag');
         const flagUrl = _resolveFlagUrl(p);
         if (flagUrl) {
-            flagEl.innerHTML = `<img src="${flagUrl}" alt="Flag" class="flag-image" />`;
+            const emoji = (p.flag_emoji || '🏳️').replace(/'/g, "\\'");
+            flagEl.innerHTML = `<img src="${flagUrl}" alt="Flag" class="flag-image" onerror="this.parentElement.textContent='${emoji}'" />`;
         } else {
             flagEl.textContent = p.flag_emoji || '🏳️';
         }
@@ -110,8 +111,9 @@ const CMapsPanel = (() => {
     function _resolveFlagUrl(props) {
         if (props.flag_url) return props.flag_url;
         // Try to resolve from iso_code (2-letter) to the local PNG
+        // Skip synthetic X-prefix codes — no flag file exists for those
         const iso = (props.iso_code || '').toLowerCase();
-        if (iso && iso.length === 2 && iso !== '-99') {
+        if (iso && iso.length === 2 && iso !== '-99' && !iso.startsWith('x')) {
             return `/static/data/flags/${iso}.png`;
         }
         return null;
