@@ -66,3 +66,46 @@ def get_capitals_by_country(country_id: int,
         "type": "FeatureCollection",
         "features": [c.to_geojson_feature() for c in caps],
     }
+
+
+@router.put("/{capital_id}/toggle-capital")
+def toggle_capital_status(capital_id: int, data: dict = {},
+                          db: Session = Depends(get_db)):
+    """
+    Toggle a city between country-capital / regional-capital / regular city.
+    Body: { "type": "country" | "regional" | "none" }
+    """
+    from fastapi import HTTPException
+
+    cap = db.query(Capital).filter(Capital.id == capital_id).first()
+    if not cap:
+        raise HTTPException(status_code=404, detail="City not found")
+
+    cap_type = data.get("type", "country")
+
+    if cap_type == "country":
+        # Demote any existing country capital for this country
+        if cap.country_id:
+            db.query(Capital).filter(
+                Capital.country_id == cap.country_id,
+                Capital.is_country_capital == True,
+                Capital.id != capital_id,
+            ).update({Capital.is_country_capital: False}, synchronize_session='fetch')
+        cap.is_country_capital = True
+        cap.is_regional_capital = True
+        # Also update the parent country's capital field
+        if cap.country_id:
+            from database import Country
+            country = db.query(Country).filter(Country.id == cap.country_id).first()
+            if country:
+                country.capital = cap.name
+    elif cap_type == "regional":
+        cap.is_country_capital = False
+        cap.is_regional_capital = True
+    else:
+        cap.is_country_capital = False
+        cap.is_regional_capital = False
+
+    db.commit()
+    db.refresh(cap)
+    return cap.to_dict()

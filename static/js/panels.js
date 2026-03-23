@@ -11,8 +11,8 @@ const CMapsPanel = (() => {
         // Close panel button
         document.getElementById('btn-close-panel')?.addEventListener('click', hide);
 
-        // Save button
-        document.getElementById('btn-save')?.addEventListener('click', saveCurrentCountry);
+        // Save button — uses unique panel ID (not top-bar btn-save)
+        document.getElementById('btn-save-country')?.addEventListener('click', saveCurrentCountry);
 
         // Edit border button
         document.getElementById('btn-edit-border')?.addEventListener('click', () => {
@@ -46,9 +46,61 @@ const CMapsPanel = (() => {
         // Flag file input
         document.getElementById('flag-upload-input')?.addEventListener('change', handleFlagUpload);
 
-        // Close modal buttons
-        document.querySelectorAll('.modal-close-btn').forEach(btn => {
-            btn.addEventListener('click', () => closeModal(btn.closest('.modal-overlay')));
+        // Close modal buttons — both .modal-close and .modal-close-btn
+        document.querySelectorAll('.modal-close, .modal-close-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const overlay = btn.closest('.modal-overlay');
+                if (overlay) {
+                    closeModal(overlay);
+                } else {
+                    closeModal('modal-overlay');
+                }
+            });
+        });
+
+        // ── Mobile: swipe-down-to-dismiss on bottom sheet ──
+        if (CMapsUtils.isTouchDevice()) {
+            _initSwipeToDismiss();
+        }
+    }
+
+    /** Set up swipe-down gesture on the panel drag handle for mobile */
+    function _initSwipeToDismiss() {
+        const panel = document.getElementById('info-panel');
+        const handle = document.getElementById('panel-swipe-handle');
+        if (!panel || !handle) return;
+
+        let startY = 0;
+        let currentY = 0;
+        let dragging = false;
+
+        handle.addEventListener('touchstart', (e) => {
+            startY = e.touches[0].clientY;
+            currentY = startY;
+            dragging = true;
+            panel.style.transition = 'none';
+        }, { passive: true });
+
+        handle.addEventListener('touchmove', (e) => {
+            if (!dragging) return;
+            currentY = e.touches[0].clientY;
+            const dy = Math.max(0, currentY - startY);
+            panel.style.transform = `translateY(${dy}px)`;
+        }, { passive: true });
+
+        handle.addEventListener('touchend', () => {
+            if (!dragging) return;
+            dragging = false;
+            panel.style.transition = '';
+            const dy = currentY - startY;
+            if (dy > 80) {
+                // Swiped far enough → dismiss
+                hide();
+                panel.style.transform = '';
+            } else {
+                // Snap back
+                panel.style.transform = '';
+            }
         });
     }
 
@@ -98,11 +150,8 @@ const CMapsPanel = (() => {
         // Flag preview in the flag section
         _updateFlagPreview(p);
 
-        // Load cities/capitals for this country
+        // Load cities/capitals for this country + stats in one pass
         loadCountryCities(p.id);
-
-        // Load region and city count stats
-        loadCountryStats(p.id);
     }
 
     /**
@@ -141,7 +190,15 @@ const CMapsPanel = (() => {
         const panel = document.getElementById('info-panel');
         panel.classList.add('hidden');
         currentFeature = null;
-        CMapsGlobe.deselectCountry();
+
+        // On touch devices, closing the panel should NOT deselect the country.
+        // Re-show the info FAB so the user can re-open details.
+        if (CMapsUtils.isTouchDevice()) {
+            const selectedId = CMapsGlobe.getSelectedId();
+            if (selectedId) CMapsGlobe.showInfoFab(selectedId);
+        } else {
+            CMapsGlobe.deselectCountry();
+        }
     }
 
     async function saveCurrentCountry() {
@@ -164,8 +221,12 @@ const CMapsPanel = (() => {
             });
 
             CMapsHistory.push('update', { before, after: result });
+
+            // Update local feature with new data
+            currentFeature = result;
+
             await CMapsGlobe.refreshCountries();
-            CMapsUtils.toast('Country saved!', 'success');
+            CMapsUtils.toast('Changes saved successfully!', 'success');
             CMapsUtils.setStatus('Ready');
         } catch (err) {
             CMapsUtils.toast(`Save failed: ${err.message}`, 'error');
@@ -186,41 +247,90 @@ const CMapsPanel = (() => {
                 return;
             }
 
+            // Update city count stat from the same response (avoids duplicate fetch)
+            const cityCountEl = document.getElementById('stat-cities');
+            if (cityCountEl) cityCountEl.textContent = cities.length > 0 ? cities.length : '—';
+
+            // Fetch region count separately (cheap, single query)
+            CMapsUtils.api(`/api/regions/by-country/${countryId}`).then(r => {
+                const regEl = document.getElementById('stat-regions');
+                if (regEl) regEl.textContent = (r.features?.length || 0) > 0 ? r.features.length : '—';
+            }).catch(() => {});
+
             container.innerHTML = cities.map(c => {
                 const p = c.properties;
+                const icon = p.is_country_capital ? '★' : (p.is_regional_capital ? '◆' : '•');
+                const badge = p.is_country_capital
+                    ? '<span class="city-badge capital">Capital</span>'
+                    : (p.is_regional_capital ? '<span class="city-badge regional">Regional</span>' : '');
                 return `
-                    <div class="city-item">
-                        <span>${p.is_country_capital ? '★' : '•'} ${p.name}</span>
-                        <span>${CMapsUtils.formatPopShort(p.population)}</span>
+                    <div class="city-item" data-city-id="${p.id}">
+                        <div class="city-info">
+                            <span class="city-icon">${icon}</span>
+                            <span class="city-name">${p.name}</span>
+                            ${badge}
+                        </div>
+                        <div class="city-actions">
+                            <span class="city-pop">${CMapsUtils.formatPopShort(p.population)}</span>
+                            <div class="city-capital-menu">
+                                <button class="btn-city-action" title="Set capital type" data-city-id="${p.id}">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                                </button>
+                                <div class="city-dropdown hidden">
+                                    <div class="city-dropdown-item" data-type="country">★ Country Capital</div>
+                                    <div class="city-dropdown-item" data-type="regional">◆ Regional Capital</div>
+                                    <div class="city-dropdown-item" data-type="none">• Regular City</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
             }).join('');
+
+            // Bind capital toggle menus
+            container.querySelectorAll('.btn-city-action').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    // Close other open dropdowns
+                    container.querySelectorAll('.city-dropdown').forEach(d => d.classList.add('hidden'));
+                    const dropdown = btn.parentElement.querySelector('.city-dropdown');
+                    dropdown.classList.toggle('hidden');
+                });
+            });
+
+            container.querySelectorAll('.city-dropdown-item').forEach(item => {
+                item.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const cityItem = item.closest('.city-item');
+                    const cityId = cityItem.dataset.cityId;
+                    const type = item.dataset.type;
+                    try {
+                        await CMapsUtils.api(`/api/capitals/${cityId}/toggle-capital`, {
+                            method: 'PUT',
+                            body: { type },
+                        });
+                        CMapsUtils.toast(`City updated to ${type === 'country' ? 'country capital' : type === 'regional' ? 'regional capital' : 'regular city'}`, 'success');
+                        // Refresh cities list and capitals on map
+                        loadCountryCities(countryId);
+                        CMapsGlobe.refreshCountries();
+                    } catch (err) {
+                        CMapsUtils.toast(`Failed: ${err.message}`, 'error');
+                    }
+                });
+            });
+
+            // Close dropdowns when clicking outside
+            document.addEventListener('click', () => {
+                container.querySelectorAll('.city-dropdown').forEach(d => d.classList.add('hidden'));
+            }, { once: true });
+
         } catch (err) {
             container.innerHTML = '<div class="empty-state">Failed to load</div>';
         }
     }
 
-    async function loadCountryStats(countryId) {
-        // Region count
-        const regEl = document.getElementById('stat-regions');
-        const cityEl = document.getElementById('stat-cities');
-
-        try {
-            const [regions, capitals] = await Promise.all([
-                CMapsUtils.api(`/api/regions/by-country/${countryId}`).catch(() => ({ features: [] })),
-                CMapsUtils.api(`/api/capitals/by-country/${countryId}`).catch(() => ({ features: [] })),
-            ]);
-
-            const regionCount = regions.features?.length || 0;
-            const cityCount = capitals.features?.length || 0;
-
-            if (regEl) regEl.textContent = regionCount > 0 ? regionCount : '—';
-            if (cityEl) cityEl.textContent = cityCount > 0 ? cityCount : '—';
-        } catch (err) {
-            if (regEl) regEl.textContent = '—';
-            if (cityEl) cityEl.textContent = '—';
-        }
-    }
+    // loadCountryStats removed — stats are now derived inline in loadCountryCities
+    // to avoid a duplicate /api/capitals/by-country/ fetch
 
     /**
      * Open the delete confirmation modal with cascade/unclaim choice.
@@ -306,15 +416,42 @@ const CMapsPanel = (() => {
     }
 
     function openModal(selector) {
-        const modal = document.querySelector(selector);
-        if (modal) modal.classList.remove('hidden');
+        // Accept bare ID strings or CSS selectors
+        const modal = selector.startsWith('#') || selector.startsWith('.')
+            ? document.querySelector(selector)
+            : document.getElementById(selector);
+        if (!modal) return;
+
+        // If modal is inside the main overlay, show the overlay and hide siblings
+        const mainOverlay = document.getElementById('modal-overlay');
+        if (mainOverlay && mainOverlay.contains(modal)) {
+            mainOverlay.classList.remove('hidden');
+            // Hide all inner modals first, then show the target
+            mainOverlay.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+            modal.classList.remove('hidden');
+        } else {
+            // Standalone overlay (e.g. delete-modal)
+            modal.classList.remove('hidden');
+        }
     }
 
     function closeModal(el) {
         if (typeof el === 'string') {
-            el = document.querySelector(el);
+            el = el.startsWith('#') || el.startsWith('.')
+                ? document.querySelector(el)
+                : document.getElementById(el);
         }
-        if (el) el.classList.add('hidden');
+        if (!el) return;
+
+        // If it's the main overlay or contains .modal, hide the overlay
+        if (el.classList.contains('modal-overlay')) {
+            el.classList.add('hidden');
+        } else {
+            // Try to find and hide the parent overlay
+            const overlay = el.closest('.modal-overlay');
+            if (overlay) overlay.classList.add('hidden');
+            el.classList.add('hidden');
+        }
     }
 
     function getCurrentFeature() { return currentFeature; }

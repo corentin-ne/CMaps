@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from database import init_db
 from routers import countries, features, cities, projects, stats, flags, regions, capitals
@@ -75,6 +76,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# GZip compression — huge win for multi-MB GeoJSON responses
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -105,6 +109,16 @@ async def root():
     return FileResponse(
         os.path.join(STATIC_DIR, "index.html"),
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+    )
+
+
+@app.get("/sw.js")
+async def service_worker():
+    """Serve the service worker from root scope for PWA."""
+    return FileResponse(
+        os.path.join(STATIC_DIR, "sw.js"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Service-Worker-Allowed": "/"},
     )
 
 

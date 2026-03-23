@@ -1,11 +1,10 @@
-- when adding regions to a country, transfer the gdp of it to the new country. Meaning a country has to be a sum of gdp (if bad idea don't do it)
+-transform into an APK i can use on my android (last version of course) keep modern. use libraries frameworks technologies well documented for you where i can do a lot of stuff. Not simplistic things you can't do anything with, the only minimalistic thing is the UX because it's worked well
 
-- show boats and planes instead of water currents and waves. not as many as the real world but put boats and planes on the routes. a bit everywhere please.
+- understand why the cities zoom scalerank is not working (tried everything) is a reset necessary ? a bug ? something you overlook ?
 
-- 3D altitude data but very simplified even when zooming.
+- hover not showing region name now
 
-- remove the handmade mountain range zones.
+- split along river too long before doing it. Preview of the region splits
+Automatic names when split i meant you can rename regions after.
 
-- coral reefs should be prettier not just lines, make it pretty on render side.
-
-- the country menu (when clicking on it) should work : change colour, etc etc and clicking save changes should do a toast or something if working.
+- way more features

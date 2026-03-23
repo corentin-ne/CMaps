@@ -2,9 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>CMaps — World Map Editor</title>
     <meta name="description" content="Interactive 3D globe world map editor for alternate history world-building">
+
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#3b82f6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CMaps">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+    <meta name="mobile-web-app-capable" content="yes">
 
     <!-- MapLibre GL JS -->
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
@@ -21,7 +30,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- App CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=7">
+    <link rel="stylesheet" href="/static/css/style.css?v=9">
 </head>
 <body>
     <!-- ═══════════ TOP BAR ═══════════ -->
@@ -190,11 +199,6 @@
                 <span class="layer-name">Mountains</span>
             </label>
             <label class="layer-toggle-row">
-                <input type="checkbox" data-layer="mountain-ranges" checked>
-                <span class="layer-swatch" style="background: #8b5a2b; border-style: dashed"></span>
-                <span class="layer-name">Mountain Ranges</span>
-            </label>
-            <label class="layer-toggle-row">
                 <input type="checkbox" data-layer="reefs" checked>
                 <span class="layer-swatch" style="background: #06b6d4"></span>
                 <span class="layer-name">Reefs</span>
@@ -246,6 +250,10 @@
     </main>
 
     <aside id="info-panel" class="hidden">
+        <!-- Mobile swipe handle -->
+        <div id="panel-swipe-handle" class="panel-swipe-handle">
+            <div class="swipe-bar"></div>
+        </div>
         <div class="panel-header">
             <h2 id="panel-title">Country Info</h2>
             <button class="btn btn-icon" id="btn-close-panel" title="Close">
@@ -325,7 +333,7 @@
 
         <!-- Actions -->
             <div class="panel-actions">
-                <button class="btn btn-primary" id="btn-save">
+                <button class="btn btn-primary" id="btn-save-country">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20,6 9,17 4,12"/></svg>
                     Save Changes
                 </button>
@@ -350,6 +358,15 @@
             </div>
         </div>
     </aside>
+
+    <!-- ═══════════ MOBILE INFO FAB ═══════════ -->
+    <button id="mobile-info-fab" class="mobile-info-fab hidden" title="Country details" aria-label="Show country details">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+    </button>
 
     <footer id="bottom-bar">
         <div class="bottom-left">
@@ -488,6 +505,14 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
             <span>Make Independent</span>
         </div>
+        <div class="ctx-item" data-action="split-river" data-requires-feature>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12c3-3 5-5 10-5M22 12c-3 3-5 5-10 5"/></svg>
+            <span>Split Along River</span>
+        </div>
+        <div class="ctx-item" data-action="rename-region" data-requires-feature>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>
+            <span>Rename Region</span>
+        </div>
         <div class="ctx-item" data-action="change-color" data-requires-feature>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
             <span>Random Color</span>
@@ -558,20 +583,112 @@
         </div>
     </div>
 
+    <!-- ═══════════ RIVER SPLIT MODAL ═══════════ -->
+    <div id="river-split-modal" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Split Region Along River</h3>
+                <button class="btn btn-icon modal-close-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-desc">Splitting <strong class="split-region-name"></strong></p>
+                <div class="form-group">
+                    <label>Select a River</label>
+                    <div id="river-list" class="river-list">
+                        <div class="empty-state">Loading nearby rivers...</div>
+                    </div>
+                </div>
+                <div class="form-group" id="split-names-group" style="display:none">
+                    <label>Names for New Parts</label>
+                    <input type="text" id="split-name-1" placeholder="Part 1 name..." class="split-name-input">
+                    <input type="text" id="split-name-2" placeholder="Part 2 name..." class="split-name-input" style="margin-top:6px">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost modal-close-btn">Cancel</button>
+                <button class="btn btn-primary" id="btn-confirm-split-river" disabled>Split</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════ RENAME REGION MODAL ═══════════ -->
+    <div id="rename-region-modal" class="modal-overlay hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Rename Region</h3>
+                <button class="btn btn-icon modal-close-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="rename-region-input">Region Name</label>
+                    <input type="text" id="rename-region-input" placeholder="Enter new name...">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost modal-close-btn">Cancel</button>
+                <button class="btn btn-primary" id="btn-confirm-rename-region">Rename</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PWA Install Banner -->
+    <div id="pwa-install-banner" class="hidden">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Install CMaps App</span>
+        <button class="btn btn-primary btn-sm" onclick="pwaInstall()">Install</button>
+        <button class="btn btn-ghost btn-sm" onclick="pwaDismiss()">✕</button>
+    </div>
+
     <!-- Toast notifications -->
     <div id="toast-container"></div>
 
     <!-- Application Scripts -->
-    <script src="/static/js/utils.js?v=3"></script>
-    <script src="/static/js/particles.js?v=3"></script>
-    <script src="/static/js/globe.js?v=24"></script>
-    <script src="/static/js/panels.js?v=5"></script>
+    <script src="/static/js/utils.js?v=6"></script>
+    <script src="/static/js/globe.js?v=30"></script>
+    <script src="/static/js/panels.js?v=8"></script>
     <script src="/static/js/search.js?v=4"></script>
-    <script src="/static/js/editor.js?v=6"></script>
+    <script src="/static/js/editor.js?v=8"></script>
     <script src="/static/js/history.js?v=2"></script>
-    <script src="/static/js/context-menu.js?v=4"></script>
+    <script src="/static/js/context-menu.js?v=5"></script>
     <script src="/static/js/scale-bar.js?v=2"></script>
     <script src="/static/js/leaderboard.js?v=2"></script>
-    <script src="/static/js/app.js?v=6"></script>
+    <script src="/static/js/app.js?v=8"></script>
+    <script>
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js', { scope: '/' })
+                    .then(reg => console.log('[PWA] Service Worker registered', reg.scope))
+                    .catch(err => console.warn('[PWA] SW registration failed:', err));
+            });
+        }
+
+        // PWA Install Prompt
+        let _deferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            _deferredInstallPrompt = e;
+            // Show install banner
+            const banner = document.getElementById('pwa-install-banner');
+            if (banner) banner.classList.remove('hidden');
+        });
+        function pwaInstall() {
+            if (!_deferredInstallPrompt) return;
+            _deferredInstallPrompt.prompt();
+            _deferredInstallPrompt.userChoice.then(() => {
+                _deferredInstallPrompt = null;
+                const banner = document.getElementById('pwa-install-banner');
+                if (banner) banner.classList.add('hidden');
+            });
+        }
+        function pwaDismiss() {
+            const banner = document.getElementById('pwa-install-banner');
+            if (banner) banner.classList.add('hidden');
+        }
+    </script>
 </body>
 </html>

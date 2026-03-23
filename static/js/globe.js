@@ -41,12 +41,13 @@ const CMapsGlobe = (() => {
         REGIONS_BORDER: 'regions-border',
         CAPITALS: 'capitals-symbol',
         CAPITALS_LABEL: 'capitals-label',
-        MOUNTAIN_RANGES: 'mountain-ranges-fill',
         SKY: 'sky-atmosphere',
         UNCLAIMED_PATTERN: 'unclaimed-pattern',
         // New layers
         URBAN_FILL: 'urban-areas-fill',
         REEFS_LINE: 'reefs-line',
+        REEFS_GLOW: 'reefs-glow',
+        REEFS_DOTS: 'reefs-dots',
         PARKS_FILL: 'parks-fill',
     };
 
@@ -126,8 +127,8 @@ const CMapsGlobe = (() => {
         setupInteractions();
 
         updateBottomBar();
-        map.on('move', CMapsUtils.throttle(updateBottomBar, 50));
-        map.on('zoom', CMapsUtils.throttle(updateBottomBar, 50));
+        // Single throttled listener — 'move' fires on pan+zoom, no need for separate 'zoom'
+        map.on('move', CMapsUtils.throttle(updateBottomBar, 60));
 
         const overlay = document.getElementById('loading-overlay');
         overlay.classList.add('fade-out');
@@ -155,25 +156,19 @@ const CMapsGlobe = (() => {
             // Initial zoom for scale-dependent loading
             const initZoom = map.getZoom();
 
-            const [rivers, lakes, mountains, mountainRanges, regions, capitals, urbanAreas, reefs, parks] = await Promise.all([
+            const [rivers, lakes, mountains, regions, capitals] = await Promise.all([
                 CMapsUtils.api(`/api/features/rivers?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api(`/api/features/lakes?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/features/mountains').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/features/mountain-ranges').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/regions/geojson').catch(() => ({ type: 'FeatureCollection', features: [] })),
                 CMapsUtils.api('/api/capitals?zoom=20').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api(`/api/features/urban-areas?zoom=${initZoom}`).catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/features/reefs').catch(() => ({ type: 'FeatureCollection', features: [] })),
-                CMapsUtils.api('/api/features/parks').catch(() => ({ type: 'FeatureCollection', features: [] })),
             ]);
 
             _currentScale.rivers = _zoomToScale(initZoom);
             _currentScale.lakes = _zoomToScale(initZoom);
-            _currentScale.urban = _zoomToScale(initZoom);
 
             addRiversLayer(rivers);
             addLakesLayer(lakes);
-            addMountainRangesLayer(mountainRanges);
             addMountainsLayer(mountains);
 
             regionsData = regions;
@@ -192,15 +187,12 @@ const CMapsGlobe = (() => {
             addCitiesLayer();
 
             addCapitalsLayer(capitals);
-            addUrbanAreasLayer(urbanAreas);
-            addReefsLayer(reefs);
-            addParksLayer(parks);
+            // Lazy-load heavy layers (parks, reefs, urban) on first zoom
+            // rather than at startup — saves ~2-3 MB of initial payload
+            _setupLazyLayers();
 
             // Start ambient map animations (capital pulse, ocean breathing, etc.)
             _startAnimations();
-
-            // Particles disabled
-            // CMapsParticles.init(map);
 
             // Set up scale-dependent data switching on zoom change
             _setupScaleSwitching();
@@ -284,11 +276,21 @@ const CMapsGlobe = (() => {
         _animLastTick = 0;
         _animFrame = requestAnimationFrame(_animLoop);
         _setupIdleRotation();
+
+        // Pause animations when tab is hidden
+        document.addEventListener('visibilitychange', () => {
+            _pageHidden = document.hidden;
+        });
     }
+
+    let _pageHidden = false;
 
     /** Master RAF loop — throttled to ~12 fps for paint updates. */
     function _animLoop(timestamp) {
         _animFrame = requestAnimationFrame(_animLoop);
+
+        // Skip all work when tab is hidden — saves CPU
+        if (_pageHidden) return;
 
         if (timestamp - _animLastTick < _ANIM_INTERVAL) return;
         _animLastTick = timestamp;
@@ -610,75 +612,6 @@ const CMapsGlobe = (() => {
         });
     }
 
-    function addMountainRangesLayer(geojson) {
-        if (!geojson.features || geojson.features.length === 0) return;
-
-        map.addSource('mountain-ranges', { type: 'geojson', data: geojson, tolerance: 1.0 });
-
-        // Semi-transparent fill with earthy brown tones
-        map.addLayer({
-            id: LAYERS.MOUNTAIN_RANGES,
-            type: 'fill',
-            source: 'mountain-ranges',
-            paint: {
-                'fill-color': [
-                    'interpolate', ['linear'],
-                    ['get', 'avg_elevation'],
-                    800, 'rgba(139, 90, 43, 0.08)',
-                    2000, 'rgba(160, 82, 45, 0.12)',
-                    4000, 'rgba(139, 69, 19, 0.18)',
-                    6000, 'rgba(120, 50, 10, 0.22)',
-                ],
-                'fill-opacity': [
-                    'interpolate', ['linear'], ['zoom'],
-                    1, 0.15,
-                    3, 0.35,
-                    6, 0.25,
-                    10, 0.1,
-                ],
-            },
-            minzoom: 1,
-        });
-
-        // Subtle outline
-        map.addLayer({
-            id: LAYERS.MOUNTAIN_RANGES + '-outline',
-            type: 'line',
-            source: 'mountain-ranges',
-            paint: {
-                'line-color': 'rgba(180, 120, 60, 0.3)',
-                'line-width': ['interpolate', ['linear'], ['zoom'], 1, 0.5, 5, 1.2, 10, 0.5],
-                'line-dasharray': [4, 3],
-                'line-opacity': ['interpolate', ['linear'], ['zoom'], 1, 0.2, 3, 0.5, 8, 0.2],
-            },
-            minzoom: 1.5,
-        });
-
-        // Range name labels
-        map.addLayer({
-            id: LAYERS.MOUNTAIN_RANGES + '-label',
-            type: 'symbol',
-            source: 'mountain-ranges',
-            layout: {
-                'text-field': ['get', 'name'],
-                'text-size': ['interpolate', ['linear'], ['zoom'], 2, 10, 5, 13, 8, 11],
-                'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
-                'text-allow-overlap': false,
-                'text-optional': true,
-                'text-max-width': 10,
-                'text-letter-spacing': 0.15,
-                'text-transform': 'uppercase',
-            },
-            paint: {
-                'text-color': '#c9a87c',
-                'text-halo-color': 'rgba(10, 10, 15, 0.85)',
-                'text-halo-width': 1.5,
-                'text-opacity': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 4, 0.8, 8, 0.5],
-            },
-            minzoom: 2,
-        });
-    }
-
     function addMountainsLayer(geojson) {
         map.addSource('mountains', { type: 'geojson', data: geojson });
 
@@ -756,41 +689,63 @@ const CMapsGlobe = (() => {
             type: 'geojson',
             data: '/static/data/ne_10m_populated_places_simple.geojson',
             cluster: false,
+            buffer: 64,
+            tolerance: 1,
         });
 
-        // City dot — radius scales by scalerank so important cities
-        // are bigger and always visible at lower zooms.
+        // City dot — progressive disclosure by scalerank:
+        //   zoom <2:   scalerank 0–2 (world capitals ~50)
+        //   zoom 2+:   scalerank 0–4 (Bordeaux, Marseille ~200)
+        //   zoom 3+:   scalerank 0–7 (Montpellier, Toulouse, Nantes ~800)
+        //   zoom 4.5+: scalerank 0–10 (all medium+ cities ~1500)
+        //   zoom 6+:   everything
         map.addLayer({
             id: LAYERS.CITIES_DOT,
             type: 'circle',
             source: 'cities',
-            minzoom: 2,
+            minzoom: 1.5,
+            filter: ['<=', ['get', 'scalerank'],
+                ['step', ['zoom'],
+                    2,       // zoom <2 → scalerank ≤ 2
+                    2, 4,    // zoom 2–3 → scalerank ≤ 4
+                    3, 7,    // zoom 3–4.5 → scalerank ≤ 7
+                    4.5, 10, // zoom 4.5–6 → scalerank ≤ 10
+                    6, 20    // zoom 6+ → everything
+                ]
+            ],
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    2, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 3, 4, 2, 8, 1, 10, 0.5],
-                    6, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 5, 4, 3.5, 8, 2.5, 10, 1.5],
-                    10, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 6, 4, 5, 8, 4, 10, 3],
+                    2, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 4.5, 4, 3, 7, 2, 10, 1.2],
+                    5, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 6, 4, 4.5, 7, 3, 10, 2],
+                    10, ['interpolate', ['linear'], ['get', 'scalerank'], 0, 8, 4, 6.5, 7, 5, 10, 3.5],
                 ],
                 'circle-color': '#cbd5e1',
-                'circle-stroke-width': 0.6,
-                'circle-stroke-color': 'rgba(15, 23, 42, 0.5)',
+                'circle-stroke-width': 1,
+                'circle-stroke-color': 'rgba(15, 23, 42, 0.6)',
                 'circle-opacity': [
                     'interpolate', ['linear'], ['zoom'],
-                    2, 0.7,
-                    6, 0.9,
+                    2, 0.8,
+                    6, 0.95,
                 ],
             },
         });
 
-        // City label — symbol-sort-key by scalerank so the most
-        // important cities win collision detection at low zooms.
-        // text-allow-overlap: false ensures natural progressive reveal.
+        // City label — same progressive filter as dots.
         map.addLayer({
             id: LAYERS.CITIES_LABEL,
             type: 'symbol',
             source: 'cities',
-            minzoom: 3,
+            minzoom: 2,
+            filter: ['<=', ['get', 'scalerank'],
+                ['step', ['zoom'],
+                    2,
+                    2, 4,
+                    3, 7,
+                    4.5, 10,
+                    6, 20
+                ]
+            ],
             layout: {
                 'text-field': ['get', 'name'],
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
@@ -915,17 +870,17 @@ const CMapsGlobe = (() => {
             minzoom: 1,
         });
 
-        // ── Star marker for country capitals — unicode ★ symbol ──
+        // ── 4-branch star marker for country capitals — ✦ symbol ──
         map.addLayer({
             id: LAYERS.CAPITALS + '-star',
             type: 'symbol',
             source: 'capitals',
             filter: ['==', ['get', 'is_country_capital'], true],
             layout: {
-                'text-field': '★',
+                'text-field': '✦',
                 'text-size': [
                     'interpolate', ['linear'], ['zoom'],
-                    0, 14,  3, 18,  6, 24,  10, 30,
+                    0, 16,  3, 20,  6, 26,  10, 32,
                 ],
                 'text-allow-overlap': true,
                 'text-ignore-placement': true,
@@ -934,17 +889,45 @@ const CMapsGlobe = (() => {
             paint: {
                 'text-color': '#ef4444',
                 'text-halo-color': 'rgba(127, 29, 29, 0.9)',
-                'text-halo-width': 1.5,
+                'text-halo-width': 1.8,
             },
             minzoom: 0,
         });
 
-        // ── Main dot for non-country capitals (regional/admin capitals) ──
+        // ── Regional capital dot — slightly larger, diamond-shaped via rotation ──
         map.addLayer({
             id: LAYERS.CAPITALS,
             type: 'circle',
             source: 'capitals',
-            filter: ['!=', ['get', 'is_country_capital'], true],
+            filter: ['all',
+                ['!=', ['get', 'is_country_capital'], true],
+                ['==', ['get', 'is_regional_capital'], true],
+            ],
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 3,  5, 5,  10, 7,
+                ],
+                'circle-color': '#fbbf24',
+                'circle-stroke-width': [
+                    'interpolate', ['linear'], ['zoom'],
+                    0, 1,  8, 1.8,
+                ],
+                'circle-stroke-color': 'rgba(15, 23, 42, 0.5)',
+                'circle-opacity': 1,
+            },
+            minzoom: 3,
+        });
+
+        // ── Regular city dot (non-capital, non-regional) ──
+        map.addLayer({
+            id: LAYERS.CAPITALS + '-regular',
+            type: 'circle',
+            source: 'capitals',
+            filter: ['all',
+                ['!=', ['get', 'is_country_capital'], true],
+                ['!=', ['get', 'is_regional_capital'], true],
+            ],
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
@@ -958,7 +941,7 @@ const CMapsGlobe = (() => {
                 'circle-stroke-color': 'rgba(15, 23, 42, 0.5)',
                 'circle-opacity': 1,
             },
-            minzoom: 3,
+            minzoom: 4,
         });
 
         // ── Country capital label — bold, uppercase, early visibility ──
@@ -989,12 +972,15 @@ const CMapsGlobe = (() => {
             minzoom: 1,
         });
 
-        // ── Non-country capital label (regional/admin) ──
+        // ── Regional capital label — slightly different styling ──
         map.addLayer({
             id: LAYERS.CAPITALS_LABEL + '-minor',
             type: 'symbol',
             source: 'capitals',
-            filter: ['!=', ['get', 'is_country_capital'], true],
+            filter: ['all',
+                ['!=', ['get', 'is_country_capital'], true],
+                ['==', ['get', 'is_regional_capital'], true],
+            ],
             layout: {
                 'text-field': ['get', 'name'],
                 'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
@@ -1021,6 +1007,38 @@ const CMapsGlobe = (() => {
     // ═══════════════════════════════════════════════════════
     //  NEW LAYERS: Urban Areas, Reefs, Parks
     // ═══════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════
+    //  LAZY-LOADED LAYERS — fetched on first zoom past minzoom
+    // ═══════════════════════════════════════════════════════
+
+    const _lazyLoaded = { urban: false, reefs: false, parks: false };
+
+    function _setupLazyLayers() {
+        const lazyCheck = CMapsUtils.debounce(async () => {
+            const zoom = map.getZoom();
+            // Urban areas visible at zoom ≥ 4, reefs at ≥ 2, parks at ≥ 4
+            if (!_lazyLoaded.urban && zoom >= 3.5) {
+                _lazyLoaded.urban = true;
+                CMapsUtils.api(`/api/features/urban-areas?zoom=${zoom}`).then(d => {
+                    addUrbanAreasLayer(d);
+                    _currentScale.urban = _zoomToScale(zoom);
+                }).catch(() => {});
+            }
+            if (!_lazyLoaded.reefs && zoom >= 2) {
+                _lazyLoaded.reefs = true;
+                CMapsUtils.api('/api/features/reefs').then(d => addReefsLayer(d)).catch(() => {});
+            }
+            if (!_lazyLoaded.parks && zoom >= 3.5) {
+                _lazyLoaded.parks = true;
+                CMapsUtils.api('/api/features/parks').then(d => addParksLayer(d)).catch(() => {});
+            }
+        }, 200);
+
+        map.on('zoomend', lazyCheck);
+        // Also check once at current zoom in case user is already zoomed in on reload
+        lazyCheck();
+    }
 
     function addUrbanAreasLayer(geojson) {
         map.addSource('urban-areas', { type: 'geojson', data: geojson, tolerance: 0.6 });
@@ -1054,17 +1072,57 @@ const CMapsGlobe = (() => {
     function addReefsLayer(geojson) {
         if (!geojson.features || geojson.features.length === 0) return;
         map.addSource('reefs', { type: 'geojson', data: geojson, tolerance: 0.5 });
+
+        // ── Wide glow layer underneath — soft turquoise aura ──
+        map.addLayer({
+            id: LAYERS.REEFS_GLOW,
+            type: 'line',
+            source: 'reefs',
+            paint: {
+                'line-color': '#22d3ee',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 3, 8, 8, 18, 12, 28],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.06, 6, 0.12, 10, 0.18],
+                'line-blur': ['interpolate', ['linear'], ['zoom'], 3, 6, 8, 12, 12, 20],
+            },
+            minzoom: 2,
+        });
+
+        // ── Main reef line — organic wavy appearance via dasharray ──
         map.addLayer({
             id: LAYERS.REEFS_LINE,
             type: 'line',
             source: 'reefs',
             paint: {
-                'line-color': '#06b6d4',
-                'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 3],
-                'line-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.4, 6, 0.7, 10, 0.9],
+                'line-color': [
+                    'interpolate', ['linear'], ['zoom'],
+                    3, '#06b6d4',
+                    8, '#22d3ee',
+                ],
+                'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1.5, 8, 4, 12, 6],
+                'line-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 6, 0.75, 10, 0.9],
+                'line-dasharray': [2, 1, 1, 1],
             },
             minzoom: 3,
         });
+
+        // ── Scattered coral dots along the reef ──
+        map.addLayer({
+            id: LAYERS.REEFS_DOTS,
+            type: 'circle',
+            source: 'reefs',
+            paint: {
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 1.5, 8, 3, 12, 5],
+                'circle-color': [
+                    'interpolate', ['linear'], ['zoom'],
+                    4, '#67e8f9',
+                    10, '#a5f3fc',
+                ],
+                'circle-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.3, 8, 0.6],
+                'circle-blur': 0.8,
+            },
+            minzoom: 5,
+        });
+
         // Reef label
         map.addLayer({
             id: LAYERS.REEFS_LINE + '-label',
@@ -1073,15 +1131,17 @@ const CMapsGlobe = (() => {
             layout: {
                 'symbol-placement': 'line',
                 'text-field': ['get', 'name'],
-                'text-size': 10,
+                'text-size': ['interpolate', ['linear'], ['zoom'], 5, 9, 10, 12],
                 'text-optional': true,
+                'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
+                'text-letter-spacing': 0.1,
             },
             paint: {
-                'text-color': '#67e8f9',
-                'text-halo-color': 'rgba(0,0,0,0.7)',
-                'text-halo-width': 1,
+                'text-color': '#a5f3fc',
+                'text-halo-color': 'rgba(0, 30, 40, 0.85)',
+                'text-halo-width': 1.5,
             },
-            minzoom: 6,
+            minzoom: 5,
         });
     }
 
@@ -1134,119 +1194,164 @@ const CMapsGlobe = (() => {
     }
 
     function setupInteractions() {
-        const handleHover = (e, sourceName) => {
-            if (e.features.length === 0) return;
-            map.getCanvas().style.cursor = 'pointer';
+        const _isTouch = CMapsUtils.isTouchDevice();
 
-            const countryId = sourceName === 'countries'
-                ? e.features[0].id
-                : e.features[0].properties.country_id;
+        let _popupCachedId = null;
+        let _popupCachedHtml = '';
 
-            if (!countryId) return;
+        // ── Mini-tooltip for touch devices ──
+        const miniTooltip = new maplibregl.Popup({
+            closeButton: false, closeOnClick: true, offset: 14,
+            className: 'cmaps-mini-tooltip',
+        });
+        let _miniTooltipTimer = null;
+        const showMiniTooltip = (lngLat, text) => {
+            clearTimeout(_miniTooltipTimer);
+            miniTooltip.setLngLat(lngLat)
+                .setHTML(`<div class="mini-tooltip-content">${text}</div>`)
+                .addTo(map);
+            _miniTooltipTimer = setTimeout(() => miniTooltip.remove(), 2500);
+        };
 
-            if (hoveredCountryId !== null && hoveredCountryId !== countryId) {
+        // ── Desktop-only hover popups ──
+        if (!_isTouch) {
+            const handleHover = (e, sourceName) => {
+                if (e.features.length === 0) return;
+                map.getCanvas().style.cursor = 'pointer';
+
+                const countryId = sourceName === 'countries'
+                    ? e.features[0].id
+                    : e.features[0].properties.country_id;
+
+                if (!countryId) return;
+
+                if (hoveredCountryId !== null && hoveredCountryId !== countryId) {
+                    clearHoverState();
+                }
+
+                hoveredCountryId = countryId;
+                setCountryHoverState(countryId, true);
+
+                // Reuse cached popup HTML if same country — avoid rebuilding on every pixel
+                if (_popupCachedId === countryId) {
+                    popup.setLngLat(e.lngLat);
+                    if (!popup.isOpen()) popup.setHTML(_popupCachedHtml).addTo(map);
+                    return;
+                }
+
+                const feature = countriesData?.features?.find(f => f.id === countryId || f.properties?.id === countryId);
+                if (!feature) return;
+
+                const props = feature.properties;
+                const isoCode = (props.iso_code || '').toLowerCase();
+                const flagSrc = props.flag_url
+                    || (isoCode && isoCode.length === 2 && isoCode !== '-99' && !isoCode.startsWith('x')
+                        ? `/static/data/flags/${isoCode}.png` : null);
+                const emojiFallback = props.flag_emoji || '🏳️';
+                const flagHtml = flagSrc
+                    ? `<img src="${flagSrc}" alt="" class="country-popup-flag" onerror="this.outerHTML='<span>'+decodeURIComponent('${encodeURIComponent(emojiFallback)}')+'</span>'">`
+                    : `<span>${emojiFallback}</span>`;
+                const popupContent = `
+                    <div class="country-popup">
+                        <div class="country-popup-name">
+                            ${flagHtml}
+                            <span>${props.name}</span>
+                        </div>
+                        <div class="country-popup-stats">
+                            <div class="country-popup-stat"><span>Population</span><span>${CMapsUtils.formatPopShort(props.population)}</span></div>
+                            <div class="country-popup-stat"><span>Area</span><span>${CMapsUtils.formatArea(props.area_km2)}</span></div>
+                            ${props.capital ? `<div class="country-popup-stat"><span>Capital</span><span>${props.capital}</span></div>` : ''}
+                            ${props.gdp_md ? `<div class="country-popup-stat"><span>GDP</span><span>$${CMapsUtils.formatPopShort(props.gdp_md * 1e6)}</span></div>` : ''}
+                        </div>
+                        ${sourceName === 'regions' && e.features[0].properties.name ? `<div class="country-popup-hint">Region: ${e.features[0].properties.name}</div>` : ''}
+                        <div class="country-popup-hint">Click for details</div>
+                    </div>
+                `;
+                _popupCachedId = countryId;
+                _popupCachedHtml = popupContent;
+                popup.setLngLat(e.lngLat).setHTML(popupContent).addTo(map);
+            };
+
+            map.on('mousemove', LAYERS.COUNTRY_INTERACT, (e) => handleHover(e, 'countries'));
+            map.on('mousemove', LAYERS.REGIONS_FILL, (e) => handleHover(e, 'regions'));
+
+            const handleMouseLeave = () => {
+                map.getCanvas().style.cursor = '';
                 clearHoverState();
-            }
+                _popupCachedId = null;
+                popup.remove();
+            };
 
-            hoveredCountryId = countryId;
-            setCountryHoverState(countryId, true);
-
-            const feature = countriesData?.features?.find(f => f.id === countryId || f.properties?.id === countryId);
-            if (!feature) return;
-
-            const props = feature.properties;
-            const isoCode = (props.iso_code || '').toLowerCase();
-            // Only build a local path for real 2-letter ISO codes (skip synthetic X-prefix)
-            const flagSrc = props.flag_url
-                || (isoCode && isoCode.length === 2 && isoCode !== '-99' && !isoCode.startsWith('x')
-                    ? `/static/data/flags/${isoCode}.png` : null);
-            const emojiFallback = props.flag_emoji || '🏳️';
-            const flagHtml = flagSrc
-                ? `<img src="${flagSrc}" alt="" class="country-popup-flag" onerror="this.outerHTML='<span>'+decodeURIComponent('${encodeURIComponent(emojiFallback)}')+'</span>'">`
-                : `<span>${emojiFallback}</span>`;
-            const popupContent = `
-                <div class="country-popup">
-                    <div class="country-popup-name">
-                        ${flagHtml}
-                        <span>${props.name}</span>
-                    </div>
-                    <div class="country-popup-stats">
-                        <div class="country-popup-stat"><span>Population</span><span>${CMapsUtils.formatPopShort(props.population)}</span></div>
-                        <div class="country-popup-stat"><span>Area</span><span>${CMapsUtils.formatArea(props.area_km2)}</span></div>
-                        ${props.capital ? `<div class="country-popup-stat"><span>Capital</span><span>${props.capital}</span></div>` : ''}
-                        ${props.gdp_md ? `<div class="country-popup-stat"><span>GDP</span><span>$${CMapsUtils.formatPopShort(props.gdp_md * 1e6)}</span></div>` : ''}
-                    </div>
-                    ${sourceName === 'regions' && e.features[0].properties.name ? `<div class="country-popup-hint">Region: ${e.features[0].properties.name}</div>` : ''}
-                    <div class="country-popup-hint">Click for details</div>
-                </div>
-            `;
-            popup.setLngLat(e.lngLat).setHTML(popupContent).addTo(map);
-        };
-
-        map.on('mousemove', LAYERS.COUNTRY_INTERACT, (e) => handleHover(e, 'countries'));
-        map.on('mousemove', LAYERS.REGIONS_FILL, (e) => handleHover(e, 'regions'));
-
-        const handleMouseLeave = () => {
-            map.getCanvas().style.cursor = '';
-            clearHoverState();
-            popup.remove();
-        };
-
-        map.on('mouseleave', LAYERS.COUNTRY_INTERACT, handleMouseLeave);
-        map.on('mouseleave', LAYERS.REGIONS_FILL, handleMouseLeave);
+            map.on('mouseleave', LAYERS.COUNTRY_INTERACT, handleMouseLeave);
+            map.on('mouseleave', LAYERS.REGIONS_FILL, handleMouseLeave);
+        }
 
         // ── City / Capital hover popups ──
         const cityPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
 
-        const handleCityHover = (e, layerType) => {
-            if (!e.features.length) return;
-            map.getCanvas().style.cursor = 'pointer';
-            const p = e.features[0].properties;
-            const pop = p.pop_max || p.population || 0;
-            const isCapital = Number(p.adm0cap) === 1;
-            const tag = isCapital
-                ? (layerType === 'capital' ? '★ Capital' : '★ Capital City')
-                : 'City';
-            const country = p.adm0name || p.country || p.country_name || '';
-            const html = `
-                <div class="country-popup">
-                    <div class="country-popup-name"><span>${tag}</span></div>
-                    <div style="font-size:13px;font-weight:600;margin:2px 0 4px">${p.name || 'Unknown'}</div>
-                    <div class="country-popup-stats">
-                        ${pop > 0 ? `<div class="country-popup-stat"><span>Population</span><span>${CMapsUtils.formatPopShort(pop)}</span></div>` : ''}
-                        ${country ? `<div class="country-popup-stat"><span>Country</span><span>${country}</span></div>` : ''}
+        if (!_isTouch) {
+            const handleCityHover = (e, layerType) => {
+                if (!e.features.length) return;
+                map.getCanvas().style.cursor = 'pointer';
+                const p = e.features[0].properties;
+                const pop = p.pop_max || p.population || 0;
+                const isCapital = Number(p.adm0cap) === 1;
+                const tag = isCapital
+                    ? (layerType === 'capital' ? '★ Capital' : '★ Capital City')
+                    : 'City';
+                const country = p.adm0name || p.country || p.country_name || '';
+                const html = `
+                    <div class="country-popup">
+                        <div class="country-popup-name"><span>${tag}</span></div>
+                        <div style="font-size:13px;font-weight:600;margin:2px 0 4px">${p.name || 'Unknown'}</div>
+                        <div class="country-popup-stats">
+                            ${pop > 0 ? `<div class="country-popup-stat"><span>Population</span><span>${CMapsUtils.formatPopShort(pop)}</span></div>` : ''}
+                            ${country ? `<div class="country-popup-stat"><span>Country</span><span>${country}</span></div>` : ''}
+                        </div>
+                        <div class="country-popup-hint">Click to fly here</div>
                     </div>
-                    <div class="country-popup-hint">Click to fly here</div>
-                </div>
-            `;
-            cityPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
-        };
+                `;
+                cityPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+            };
 
-        const handleCityLeave = () => {
-            map.getCanvas().style.cursor = '';
-            cityPopup.remove();
-        };
+            const handleCityLeave = () => {
+                map.getCanvas().style.cursor = '';
+                cityPopup.remove();
+            };
 
-        // Cities layer hover + click
+            map.on('mousemove', LAYERS.CITIES_DOT, (e) => handleCityHover(e, 'city'));
+            map.on('mouseleave', LAYERS.CITIES_DOT, handleCityLeave);
+
+            for (const capLayer of [LAYERS.CAPITALS, LAYERS.CAPITALS + '-star']) {
+                map.on('mousemove', capLayer, (e) => handleCityHover(e, 'capital'));
+                map.on('mouseleave', capLayer, handleCityLeave);
+            }
+        }
+
+        // ── Click / Tap handlers (both desktop & mobile) ──
         let _cityClickConsumed = false;
 
-        map.on('mousemove', LAYERS.CITIES_DOT, (e) => handleCityHover(e, 'city'));
-        map.on('mouseleave', LAYERS.CITIES_DOT, handleCityLeave);
         map.on('click', LAYERS.CITIES_DOT, (e) => {
             if (!e.features.length) return;
             _cityClickConsumed = true;
+            const p = e.features[0].properties;
+            if (_isTouch) {
+                const isCapital = Number(p.adm0cap) === 1;
+                showMiniTooltip(e.lngLat, `${isCapital ? '★ ' : ''}${p.name || 'City'}`);
+            }
             const coords = e.features[0].geometry.coordinates;
             flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
             cityPopup.remove();
         });
 
-        // Capitals layer hover + click (star layer for country capitals, circle for others)
         for (const capLayer of [LAYERS.CAPITALS, LAYERS.CAPITALS + '-star']) {
-            map.on('mousemove', capLayer, (e) => handleCityHover(e, 'capital'));
-            map.on('mouseleave', capLayer, handleCityLeave);
             map.on('click', capLayer, (e) => {
                 if (!e.features.length) return;
                 _cityClickConsumed = true;
+                const p = e.features[0].properties;
+                if (_isTouch) {
+                    showMiniTooltip(e.lngLat, `★ ${p.name || 'Capital'}`);
+                }
                 const coords = e.features[0].geometry.coordinates;
                 flyTo(coords[0], coords[1], Math.max(map.getZoom() + 2, 8));
                 cityPopup.remove();
@@ -1262,7 +1367,6 @@ const CMapsGlobe = (() => {
                 if (sourceName === 'regions') {
                     CMapsEditor.handleRegionClick(e.features[0], e.originalEvent?.shiftKey);
                 }
-                // Suppress country selection — keep target country locked
                 return;
             }
 
@@ -1270,24 +1374,41 @@ const CMapsGlobe = (() => {
                 ? (e.features[0].id || e.features[0].properties.id)
                 : e.features[0].properties.country_id;
 
-            if (countryId) selectCountry(countryId);
+            if (!countryId) return;
+
+            if (_isTouch) {
+                // On mobile: select + show mini-tooltip with country name, but DON'T open panel
+                selectCountry(countryId, /* openPanel */ false);
+                const feature = countriesData?.features?.find(f => f.id === countryId || f.properties?.id === countryId);
+                if (feature) {
+                    const p = feature.properties;
+                    const flag = p.flag_emoji || '';
+                    const regionName = sourceName === 'regions' && e.features[0].properties.name
+                        ? `<br><span style="opacity:.7;font-size:11px">${e.features[0].properties.name}</span>` : '';
+                    showMiniTooltip(e.lngLat, `${flag} ${p.name}${regionName}`);
+                }
+                // Show the floating info FAB
+                showInfoFab(countryId);
+            } else {
+                selectCountry(countryId, /* openPanel */ true);
+            }
         };
 
         map.on('click', LAYERS.COUNTRY_INTERACT, (e) => handleClick(e, 'countries'));
         map.on('click', LAYERS.REGIONS_FILL, (e) => handleClick(e, 'regions'));
 
         map.on('click', (e) => {
-            // Don't deselect when a city/capital click was consumed
             if (_cityClickConsumed) { _cityClickConsumed = false; return; }
-            // Don't deselect the locked target in add-regions mode
             if (typeof CMapsEditor !== 'undefined' && CMapsEditor.getCurrentTool() === 'add-regions') return;
             const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_INTERACT, LAYERS.REGIONS_FILL] });
             if (features.length === 0) {
                 deselectCountry();
+                hideInfoFab();
+                miniTooltip.remove();
             }
         });
 
-        // Context menu (right-click) — dispatches custom event for context-menu module
+        // Context menu (right-click / long-press)
         map.on('contextmenu', (e) => {
             const features = map.queryRenderedFeatures(e.point, { layers: [LAYERS.COUNTRY_INTERACT, LAYERS.REGIONS_FILL] });
             const detail = {
@@ -1331,7 +1452,12 @@ const CMapsGlobe = (() => {
         }
     }
 
-    function selectCountry(id) {
+    /**
+     * Select a country visually + optionally open the info panel.
+     * @param {number|string} id - Country feature ID
+     * @param {boolean} openPanel - Whether to open the details panel (default true on desktop)
+     */
+    function selectCountry(id, openPanel = true) {
         if (selectedCountryId !== null) {
             setCountrySelectedState(selectedCountryId, false);
         }
@@ -1339,13 +1465,27 @@ const CMapsGlobe = (() => {
         selectedCountryId = id;
         setCountrySelectedState(id, true);
 
-        const feature = countriesData?.features?.find(f => f.id === id || f.properties?.id === id);
-        if (feature) {
-            CMapsPanel.showCountry(feature);
+        if (openPanel) {
+            const feature = countriesData?.features?.find(f => f.id === id || f.properties?.id === id);
+            if (feature) {
+                CMapsPanel.showCountry(feature);
+            }
         }
 
         document.getElementById('btn-split').disabled = false;
         document.getElementById('btn-delete').disabled = false;
+    }
+
+    /** Show / hide the mobile info FAB when a country is selected */
+    function showInfoFab(countryId) {
+        const fab = document.getElementById('mobile-info-fab');
+        if (!fab) return;
+        fab.classList.remove('hidden');
+        fab.dataset.countryId = countryId;
+    }
+    function hideInfoFab() {
+        const fab = document.getElementById('mobile-info-fab');
+        if (fab) fab.classList.add('hidden');
     }
 
     function deselectCountry() {
@@ -1353,6 +1493,7 @@ const CMapsGlobe = (() => {
             setCountrySelectedState(selectedCountryId, false);
             selectedCountryId = null;
         }
+        hideInfoFab();
         CMapsPanel.hide();
         document.getElementById('btn-split').disabled = true;
         document.getElementById('btn-delete').disabled = true;
@@ -1455,17 +1596,13 @@ const CMapsGlobe = (() => {
             'rivers': [LAYERS.RIVERS, LAYERS.RIVERS + '-label'],
             'lakes': [LAYERS.LAKES, LAYERS.LAKES + '-label'],
             'mountains': [LAYERS.MOUNTAINS, LAYERS.MOUNTAINS + '-label'],
-            'mountain-ranges': [LAYERS.MOUNTAIN_RANGES, LAYERS.MOUNTAIN_RANGES + '-outline', LAYERS.MOUNTAIN_RANGES + '-label'],
             'cities': [LAYERS.CITIES_DOT, LAYERS.CITIES_LABEL],
             'regions': [LAYERS.REGIONS_BORDER],
             'capitals': [LAYERS.CAPITALS, LAYERS.CAPITALS + '-halo', LAYERS.CAPITALS + '-star', LAYERS.CAPITALS_LABEL, LAYERS.CAPITALS_LABEL + '-minor'],
             'urban-areas': [LAYERS.URBAN_FILL, LAYERS.URBAN_FILL + '-outline'],
-            'reefs': [LAYERS.REEFS_LINE, LAYERS.REEFS_LINE + '-label'],
+            'reefs': [LAYERS.REEFS_LINE, LAYERS.REEFS_LINE + '-label', LAYERS.REEFS_GLOW, LAYERS.REEFS_DOTS],
             'parks': [LAYERS.PARKS_FILL, LAYERS.PARKS_FILL + '-outline', LAYERS.PARKS_FILL + '-label'],
         };
-
-        // Particle animation toggles (disabled)
-        if (layerKey === 'shore-waves' || layerKey === 'ocean-currents' || layerKey === 'wind-streams') return;
 
         // Auto-rotate toggle
         if (layerKey === 'auto-rotate') {
@@ -1501,15 +1638,14 @@ const CMapsGlobe = (() => {
         _dom.coords.textContent = `${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}`;
         _dom.zoom.textContent = `Zoom: ${zoom.toFixed(1)}`;
 
-        // Update scale bar if module exists
-        if (typeof CMapsScaleBar !== 'undefined') {
-            CMapsScaleBar.update(map);
-        }
+        // ScaleBar updates are already wired in app.js via moveend/zoomend
+        // No need to also update on every move frame
     }
 
     async function refreshRegions() {
         try {
             regionsData = await CMapsUtils.api('/api/regions/geojson', { bypassCache: true });
+            _regionIndex = null; // Invalidate index — rebuilt lazily
             countryToRegions = {};
             regionsData.features.forEach(f => {
                 const cId = f.properties.country_id;
@@ -1530,25 +1666,38 @@ const CMapsGlobe = (() => {
      * Instantly update region ownership in local data and re-render.
      * No server round-trip — map updates in the same frame.
      */
+    // ── Region ID → feature index for O(1) lookups ──
+    let _regionIndex = null;
+
+    function _ensureRegionIndex() {
+        if (_regionIndex && _regionIndex.size > 0) return;
+        _regionIndex = new Map();
+        if (!regionsData?.features) return;
+        for (let i = 0; i < regionsData.features.length; i++) {
+            const f = regionsData.features[i];
+            const id = f.id ?? f.properties?.id;
+            if (id != null) _regionIndex.set(id, i);
+        }
+    }
+
     function updateRegionCountryId(regionIds, newCountryId) {
         if (!regionsData?.features) return;
+        _ensureRegionIndex();
 
         for (const rid of regionIds) {
-            const feature = regionsData.features.find(f =>
-                (f.id === rid) || (f.properties?.id === rid)
-            );
-            if (feature) {
-                const oldCId = feature.properties.country_id;
-                feature.properties.country_id = newCountryId;
+            const idx = _regionIndex.get(rid);
+            if (idx == null) continue;
+            const feature = regionsData.features[idx];
+            const oldCId = feature.properties.country_id;
+            feature.properties.country_id = newCountryId;
 
-                // Update countryToRegions index
-                if (oldCId && countryToRegions[oldCId]) {
-                    countryToRegions[oldCId] = countryToRegions[oldCId].filter(id => id !== rid);
-                }
-                if (!countryToRegions[newCountryId]) countryToRegions[newCountryId] = [];
-                if (!countryToRegions[newCountryId].includes(rid)) {
-                    countryToRegions[newCountryId].push(rid);
-                }
+            // Update countryToRegions index
+            if (oldCId && countryToRegions[oldCId]) {
+                countryToRegions[oldCId] = countryToRegions[oldCId].filter(id => id !== rid);
+            }
+            if (!countryToRegions[newCountryId]) countryToRegions[newCountryId] = [];
+            if (!countryToRegions[newCountryId].includes(rid)) {
+                countryToRegions[newCountryId].push(rid);
             }
         }
 
@@ -1591,6 +1740,8 @@ const CMapsGlobe = (() => {
         fitBounds,
         flyToCountry,
         toggleLayer,
+        showInfoFab,
+        hideInfoFab,
         LAYERS,
     };
 })();

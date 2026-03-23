@@ -17,23 +17,28 @@ def recalculate_country(db: Session, country_id: int, skip_geometry: bool = Fals
     if not country:
         return {}
 
-    # Aggregate from regions
+    # Aggregate from regions — single query for pop, area, GDP, and count
     result = db.query(
         func.sum(Region.population).label('total_pop'),
         func.sum(Region.area_km2).label('total_area'),
+        func.sum(Region.gdp_md).label('total_gdp'),
+        func.count(Region.id).label('region_count'),
     ).filter(Region.country_id == country_id).first()
 
     total_pop = result.total_pop or 0
     total_area = result.total_area or 0.0
+    total_gdp = result.total_gdp or 0.0
+    region_count = result.region_count or 0
 
     # Only update if we have regions with data
-    region_count = db.query(Region).filter(Region.country_id == country_id).count()
     if region_count > 0:
         # If regions have population data, use aggregated values
         if total_pop > 0:
             country.population = total_pop
         if total_area > 0:
             country.area_km2 = total_area
+        if total_gdp > 0:
+            country.gdp_md = total_gdp
 
         if not skip_geometry:
             # Update geometry by merging region geometries (expensive!)
@@ -68,6 +73,7 @@ def propagate_region_change(db: Session, region_id: int):
 def reassign_region(db: Session, region_id: int, new_country_id: int, old_country_id: int = None, defer_geometry: bool = False):
     """
     Move a region from one country to another and recalculate both.
+    Also transfers cities (capitals) in the region to the new country.
     When defer_geometry=True, skips expensive geometry merge for rapid batch operations.
     """
     region = db.query(Region).filter(Region.id == region_id).first()
@@ -76,9 +82,15 @@ def reassign_region(db: Session, region_id: int, new_country_id: int, old_countr
 
     old_id = old_country_id or region.country_id
     region.country_id = new_country_id
+
+    # Transfer cities that belong to this region to the new country
+    db.query(Capital).filter(Capital.region_id == region_id).update(
+        {Capital.country_id: new_country_id}, synchronize_session='fetch'
+    )
+
     db.commit()
 
-    # Recalculate both old and new parent
+    # Recalculate both old and new parent (includes GDP aggregation)
     if old_id:
         recalculate_country(db, old_id, skip_geometry=defer_geometry)
     recalculate_country(db, new_country_id, skip_geometry=defer_geometry)

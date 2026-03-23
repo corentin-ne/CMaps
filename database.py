@@ -15,10 +15,19 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data/cmaps.db")
 
 # Handle SQLite-specific connect args
 connect_args = {}
-if DATABASE_URL.startswith("sqlite"):
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+if _is_sqlite:
     connect_args["check_same_thread"] = False
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    # SQLite: larger pool + overflow for concurrent requests
+    pool_size=5 if _is_sqlite else 10,
+    max_overflow=10 if _is_sqlite else 20,
+    pool_recycle=3600,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -221,9 +230,19 @@ class EditHistory(Base):
 # ═══════════════════════════════════════════════════════
 
 def init_db():
-    """Create all tables."""
+    """Create all tables and optimize SQLite settings."""
     os.makedirs("data", exist_ok=True)
     Base.metadata.create_all(bind=engine)
+
+    # SQLite performance pragmas: WAL mode + larger cache
+    if _is_sqlite:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA cache_size=-64000"))  # 64MB cache
+            conn.execute(text("PRAGMA synchronous=NORMAL"))
+            conn.execute(text("PRAGMA temp_store=MEMORY"))
+            conn.commit()
 
 
 def get_db():

@@ -7,10 +7,13 @@ import json
 import math
 import os
 from functools import lru_cache
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 router = APIRouter(prefix="/api/features", tags=["features"])
+
+# Cache-Control header for semi-static natural features (5 minutes)
+_FEATURE_CACHE_HEADERS = {"Cache-Control": "public, max-age=300, stale-while-revalidate=600"}
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "data")
 
@@ -81,22 +84,28 @@ def _load_geojson(filename: str) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 @router.get("/rivers")
-def get_rivers(zoom: float = Query(0, description="Current map zoom")):
+def get_rivers(zoom: float = Query(0, description="Current map zoom"), response: Response = None):
     """Get river lines GeoJSON at the appropriate resolution."""
+    if response:
+        response.headers.update(_FEATURE_CACHE_HEADERS)
     scale = _zoom_to_scale(zoom)
     return _load_geojson(_best_file("rivers", scale))
 
 
 @router.get("/lakes")
-def get_lakes(zoom: float = Query(0, description="Current map zoom")):
+def get_lakes(zoom: float = Query(0, description="Current map zoom"), response: Response = None):
     """Get lake polygons GeoJSON at the appropriate resolution."""
+    if response:
+        response.headers.update(_FEATURE_CACHE_HEADERS)
     scale = _zoom_to_scale(zoom)
     return _load_geojson(_best_file("lakes", scale))
 
 
 @router.get("/urban-areas")
-def get_urban_areas(zoom: float = Query(0, description="Current map zoom")):
+def get_urban_areas(zoom: float = Query(0, description="Current map zoom"), response: Response = None):
     """Get urban area polygons at appropriate resolution."""
+    if response:
+        response.headers.update(_FEATURE_CACHE_HEADERS)
     scale = _zoom_to_scale(zoom)
     return _load_geojson(_best_file("urban", scale))
 
@@ -492,7 +501,5 @@ def _build_mountain_ranges() -> dict:
 
 @router.get("/mountain-ranges")
 def get_mountain_ranges():
-    """Get mountain range polygon zones as GeoJSON (clustered from peak data)."""
-    if "mountain_ranges" not in _cache:
-        _cache["mountain_ranges"] = _build_mountain_ranges()
-    return _cache["mountain_ranges"]
+    """Mountain range zones removed — individual peaks are used with terrain instead."""
+    return {"type": "FeatureCollection", "features": []}

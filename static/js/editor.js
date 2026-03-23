@@ -19,12 +19,12 @@ const CMapsEditor = (() => {
         
         const btnSplit = document.getElementById('btn-split'); // from toolbar
         if (btnSplit) btnSplit.addEventListener('click', () => {
-             CMapsUtils.toast('Splitting is currently disabled. Assign regions individually instead.', 'info');
+             CMapsUtils.toast('Right-click a region to split it along a river.', 'info');
         });
 
         const btnSplitPanel = document.getElementById('btn-split-panel'); // from panel action
         if (btnSplitPanel) btnSplitPanel.addEventListener('click', () => {
-             CMapsUtils.toast('Splitting is currently disabled. Assign regions individually instead.', 'info');
+             CMapsUtils.toast('Right-click a region to split it along a river.', 'info');
         });
         
         const btnDeleteToolbar = document.getElementById('btn-delete'); // toolbar action button
@@ -224,7 +224,7 @@ const CMapsEditor = (() => {
 
     // ═══ Split ═══
     function startSplitMode(feature) {
-         CMapsUtils.toast('Splitting is currently disabled. Detach regions using the context menu instead.', 'info');
+         CMapsUtils.toast('Right-click a region and choose "Split Along River" to split it.', 'info');
     }
 
     // ═══ Merge ═══

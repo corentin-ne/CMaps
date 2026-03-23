@@ -66,7 +66,8 @@ class SplitRequest(BaseModel):
 @router.get("/geojson")
 def get_countries_geojson(db: Session = Depends(get_db)):
     """Get all countries as a GeoJSON FeatureCollection for map rendering."""
-    countries = db.query(Country).all()
+    # Use .yield_per() to avoid loading all ORM objects at once
+    countries = db.query(Country).yield_per(50).all()
     features = [c.to_geojson_feature() for c in countries]
     return {
         "type": "FeatureCollection",

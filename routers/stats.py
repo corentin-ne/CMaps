@@ -35,26 +35,28 @@ def get_leaderboard(limit: int = 5, db: Session = Depends(get_db)):
               .limit(limit)
               .all())
 
-    # By Region Count
-    region_counts = (db.query(
-        Region.country_id,
-        func.count(Region.id).label('count')
-    ).filter(Region.country_id != None)
-     .group_by(Region.country_id)
-     .order_by(func.count(Region.id).desc())
-     .limit(limit)
-     .all())
-
-    by_regions = []
-    for rc in region_counts:
-        country = db.query(Country).filter(Country.id == rc.country_id).first()
-        if country:
-            by_regions.append({
-                'id': country.id,
-                'name': country.name,
-                'flag': country.flag_emoji,
-                'value': rc.count,
-            })
+    # By Region Count — single joined query, no N+1
+    from sqlalchemy.orm import aliased
+    region_sub = (
+        db.query(
+            Region.country_id,
+            func.count(Region.id).label('count')
+        ).filter(Region.country_id != None)
+         .group_by(Region.country_id)
+         .order_by(func.count(Region.id).desc())
+         .limit(limit)
+         .subquery()
+    )
+    region_rows = (
+        db.query(Country.id, Country.name, Country.flag_emoji, region_sub.c.count)
+        .join(region_sub, Country.id == region_sub.c.country_id)
+        .order_by(region_sub.c.count.desc())
+        .all()
+    )
+    by_regions = [
+        {'id': r.id, 'name': r.name, 'flag': r.flag_emoji, 'value': r.count}
+        for r in region_rows
+    ]
 
     # Global aggregates
     global_stats = db.query(

@@ -28,6 +28,7 @@ const CMapsApp = (() => {
         setupTopBarActions();
         setupLayerToggles();
         setupThemeToggle();
+        setupMobileFab();
 
         // Wire scale bar updates to globe movement
         const map = CMapsGlobe.getMap?.();
@@ -409,6 +410,28 @@ const CMapsApp = (() => {
         };
         reader.readAsText(file);
         e.target.value = ''; // Reset
+    }
+
+    /**
+     * Mobile info FAB — opens the country details panel.
+     */
+    function setupMobileFab() {
+        const fab = document.getElementById('mobile-info-fab');
+        if (!fab) return;
+
+        fab.addEventListener('click', () => {
+            const countryId = CMapsGlobe.getSelectedId();
+            if (!countryId) return;
+            const countries = CMapsGlobe.getCountriesData();
+            const feature = countries?.features?.find(
+                f => f.id === countryId || f.properties?.id === countryId
+            );
+            if (feature) {
+                CMapsPanel.showCountry(feature);
+                // Hide FAB while panel is open
+                fab.classList.add('hidden');
+            }
+        });
     }
 
     return { init };

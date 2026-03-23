@@ -75,6 +75,34 @@ const CMapsUtils = (() => {
         } catch { /* ignore */ }
     }
 
+    /**
+     * Targeted cache invalidation — delete keys matching the mutated resource.
+     * E.g. PUT /api/countries/5 → invalidate all /api/countries/* keys
+     * but keep /api/features/rivers, /api/features/lakes etc.
+     */
+    async function idbInvalidate(mutationUrl) {
+        try {
+            const db = await openIDB();
+            if (!db) return;
+            // Extract the resource prefix: /api/countries/5 → /api/countries
+            const parts = mutationUrl.split('/');
+            // Keep /api/<resource> as the prefix to match
+            const prefix = parts.length >= 3 ? parts.slice(0, 3).join('/') : mutationUrl;
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            const store = tx.objectStore(IDB_STORE);
+            const req = store.openCursor();
+            req.onsuccess = () => {
+                const cursor = req.result;
+                if (cursor) {
+                    if (cursor.value.url.startsWith(prefix)) {
+                        cursor.delete();
+                    }
+                    cursor.continue();
+                }
+            };
+        } catch { /* ignore */ }
+    }
+
     // ═══ Formatting ═══
 
     /**
@@ -182,23 +210,13 @@ const CMapsUtils = (() => {
                 config.body = JSON.stringify(options.body);
             }
 
-            // Invalidate cache on mutations
+            // Targeted cache invalidation on mutations — only clear related keys
             if (!isGet) {
-                await idbClear();
+                await idbInvalidate(url);
             } else if (!options.bypassCache) {
                 // Try IndexedDB cache first for GET requests
                 const cached = await idbGet(url);
                 if (cached !== null) {
-                    // Stale-while-revalidate: background refresh
-                    fetch(url, config).then(async res => {
-                        if (res.ok) {
-                            const ct = res.headers.get('content-type');
-                            if (ct && (ct.includes('application/json') || ct.includes('application/geo+json'))) {
-                                const freshData = await res.json();
-                                await idbPut(url, freshData);
-                            }
-                        }
-                    }).catch(() => {});
                     return cached;
                 }
             }
@@ -292,5 +310,17 @@ const CMapsUtils = (() => {
         toast,
         setStatus,
         randomColor,
+        /** True if the device is primarily touch (phone/tablet). Cached once. */
+        isTouchDevice: (() => {
+            let _cached = null;
+            return () => {
+                if (_cached === null) {
+                    _cached = ('ontouchstart' in window) ||
+                              (navigator.maxTouchPoints > 0) ||
+                              (window.matchMedia('(pointer: coarse)').matches);
+                }
+                return _cached;
+            };
+        })(),
     };
 })();
